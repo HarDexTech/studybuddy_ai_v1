@@ -1,6 +1,6 @@
 'use server';
 /**
- * @fileOverview A flow to generate a single test question.
+ * @fileOverview A flow to generate a single test question with automatic fallback.
  *
  * - generateSingleTestQuestion - Generates one test question based on document content and settings.
  * - GenerateSingleTestQuestionInput - The input type for the function.
@@ -9,6 +9,7 @@
 
 import {ai} from '@/ai/genkit';
 import {z} from 'genkit';
+import { withFallback } from '@/ai/fallback-helper';
 
 const GenerateSingleTestQuestionInputSchema = z.object({
   documentContent: z
@@ -58,7 +59,11 @@ const GenerateSingleTestQuestionOutputSchema = z.union([
 export type GenerateSingleTestQuestionOutput = z.infer<typeof GenerateSingleTestQuestionOutputSchema>;
 
 export async function generateSingleTestQuestion(input: GenerateSingleTestQuestionInput): Promise<GenerateSingleTestQuestionOutput> {
-  const result = await generateSingleTestQuestionFlow(input);
+  // Use fallback wrapper - will try Gemini first, then OpenRouter if needed
+  const result = await withFallback(async (modelName) => {
+    return await generateSingleTestQuestionFlow(input, modelName);
+  });
+  
   // Manually add the type back in for the non-"all" cases.
   if (input.questionType !== 'all') {
     return {
@@ -117,16 +122,17 @@ Generate one unique question now.
 `,
 });
 
-const generateSingleTestQuestionFlow = ai.defineFlow(
-  {
-    name: 'generateSingleTestQuestionFlow',
-    inputSchema: GenerateSingleTestQuestionInputSchema,
-    outputSchema: GenerateSingleTestQuestionOutputSchema,
-  },
-  async input => {
-    const isStrict = input.questionSource === 'strict';
-    const isAllTypes = input.questionType === 'all';
-    const {output} = await prompt({...input, isStrict, isAllTypes});
-    return output!;
-  }
-);
+const generateSingleTestQuestionFlow = async (
+  input: GenerateSingleTestQuestionInput,
+  modelName: string
+): Promise<GenerateSingleTestQuestionOutput> => {
+  const isStrict = input.questionSource === 'strict';
+  const isAllTypes = input.questionType === 'all';
+  
+  const {output} = await prompt(
+    {...input, isStrict, isAllTypes},
+    { model: modelName } // Use the provided model (Gemini or OpenRouter fallback)
+  );
+  
+  return output!;
+};

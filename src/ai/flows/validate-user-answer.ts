@@ -10,6 +10,7 @@
 
 import {ai} from '@/ai/genkit';
 import {z} from 'genkit';
+import { withFallback } from '@/ai/fallback-helper';
 
 const ValidateUserAnswerInputSchema = z.object({
   documentContent: z
@@ -29,7 +30,9 @@ const ValidateUserAnswerOutputSchema = z.object({
 export type ValidateUserAnswerOutput = z.infer<typeof ValidateUserAnswerOutputSchema>;
 
 export async function validateUserAnswer(input: ValidateUserAnswerInput): Promise<ValidateUserAnswerOutput> {
-  return validateUserAnswerFlow(input);
+  return withFallback(async (modelName) => {
+    return await validateUserAnswerFlow(input, modelName);
+  });
 }
 
 const prompt = ai.definePrompt({
@@ -85,15 +88,11 @@ Common Instructions:
 `,
 });
 
-const validateUserAnswerFlow = ai.defineFlow(
-  {
-    name: 'validateUserAnswerFlow',
-    inputSchema: ValidateUserAnswerInputSchema,
-    outputSchema: ValidateUserAnswerOutputSchema,
-  },
-  async input => {
-    const isStrict = input.questionSource === 'strict';
-    const {output} = await prompt({...input, isStrict});
-    return output!;
-  }
-);
+const validateUserAnswerFlow = async (
+  input: ValidateUserAnswerInput,
+  modelName: string
+): Promise<ValidateUserAnswerOutput> => {
+  const isStrict = input.questionSource === 'strict';
+  const {output} = await prompt({...input, isStrict}, { model: modelName });
+  return output!;
+};

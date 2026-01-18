@@ -9,6 +9,7 @@
 
 import {ai} from '@/ai/genkit';
 import {z} from 'genkit';
+import { withFallback } from '@/ai/fallback-helper';
 
 const AnswerDocumentQuestionInputSchema = z.object({
   documentContent: z
@@ -24,7 +25,9 @@ const AnswerDocumentQuestionOutputSchema = z.object({
 export type AnswerDocumentQuestionOutput = z.infer<typeof AnswerDocumentQuestionOutputSchema>;
 
 export async function answerDocumentQuestion(input: AnswerDocumentQuestionInput): Promise<AnswerDocumentQuestionOutput> {
-  return answerDocumentQuestionFlow(input);
+  return withFallback(async (modelName) => {
+    return await answerDocumentQuestionFlow(input, modelName);
+  });
 }
 
 const prompt = ai.definePrompt({
@@ -47,14 +50,10 @@ Provide your answer now.
 `,
 });
 
-const answerDocumentQuestionFlow = ai.defineFlow(
-  {
-    name: 'answerDocumentQuestionFlow',
-    inputSchema: AnswerDocumentQuestionInputSchema,
-    outputSchema: AnswerDocumentQuestionOutputSchema,
-  },
-  async input => {
-    const {output} = await prompt(input);
-    return output!;
-  }
-);
+const answerDocumentQuestionFlow = async (
+  input: AnswerDocumentQuestionInput,
+  modelName: string
+): Promise<AnswerDocumentQuestionOutput> => {
+  const {output} = await prompt(input, { model: modelName });
+  return output!;
+};
