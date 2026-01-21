@@ -1,15 +1,10 @@
 'use server';
 /**
- * @fileOverview A flow to provide a detailed explanation for a test question.
- *
- * - explainQuestion - Generates an explanation for a question and its correct answer.
- * - ExplainQuestionInput - The input type for the function.
- * - ExplainQuestionOutput - The return type for the function.
+ * @fileOverview A flow to explain why an answer to a question is correct.
  */
 
-import {ai} from '@/ai/genkit';
+import {ai, withDualGeminiFallback} from '@/ai/genkit';
 import {z} from 'genkit';
-import { withFallback } from '@/ai/fallback-helper';
 
 const ExplainQuestionInputSchema = z.object({
   documentContent: z
@@ -21,13 +16,13 @@ const ExplainQuestionInputSchema = z.object({
 export type ExplainQuestionInput = z.infer<typeof ExplainQuestionInputSchema>;
 
 const ExplainQuestionOutputSchema = z.object({
-    explanation: z.string().describe("A detailed explanation of the question and why the provided answer is correct, based on the document content."),
+  explanation: z.string().describe('A detailed explanation of the question and why the provided answer is correct, based on the document content.'),
 });
 export type ExplainQuestionOutput = z.infer<typeof ExplainQuestionOutputSchema>;
 
 export async function explainQuestion(input: ExplainQuestionInput): Promise<ExplainQuestionOutput> {
-  return withFallback(async (modelName) => {
-    return await explainQuestionFlow(input, modelName);
+  return withDualGeminiFallback(async () => {
+    return await explainQuestionFlow(input);
   });
 }
 
@@ -35,29 +30,28 @@ const prompt = ai.definePrompt({
   name: 'explainQuestionPrompt',
   input: {schema: ExplainQuestionInputSchema},
   output: {schema: ExplainQuestionOutputSchema},
-  prompt: `You are a helpful study assistant. Your task is to provide a clear and detailed explanation for a test question, based *only* on the provided "Document Content".
+  prompt: `You are a study assistant that helps students understand why answers to questions are correct.
 
-Your explanation should break down the question, explain the underlying concept, and show where in the document the correct answer can be found.
+Given the document content, the question, and the correct answer, provide a detailed explanation of:
+1. What the question is asking
+2. Why the provided answer is correct
+3. Supporting information from the document
+
+Question: {{question}}
+Correct Answer: {{correctAnswer}}
 
 Document Content:
 \`\`\`
 {{{documentContent}}}
 \`\`\`
 
-Question:
-"{{{question}}}"
-
-Correct Answer:
-"{{{correctAnswer}}}"
-
-Provide a detailed explanation now.
+Provide a clear, educational explanation.
 `,
 });
 
 const explainQuestionFlow = async (
-  input: ExplainQuestionInput,
-  modelName: string
+  input: ExplainQuestionInput
 ): Promise<ExplainQuestionOutput> => {
-  const {output} = await prompt(input, { model: modelName });
+  const {output} = await prompt(input, { model: 'googleai/gemini-2.0-flash-exp' });
   return output!;
 };

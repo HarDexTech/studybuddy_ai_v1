@@ -7,9 +7,8 @@
  * - GenerateSingleTestQuestionOutput - The return type for the function.
  */
 
-import {ai} from '@/ai/genkit';
+import {ai, withDualGeminiFallback} from '@/ai/genkit';
 import {z} from 'genkit';
-import { withFallback } from '@/ai/fallback-helper';
 
 const GenerateSingleTestQuestionInputSchema = z.object({
   documentContent: z
@@ -58,11 +57,87 @@ const GenerateSingleTestQuestionOutputSchema = z.union([
 ]);
 export type GenerateSingleTestQuestionOutput = z.infer<typeof GenerateSingleTestQuestionOutputSchema>;
 
+// Build prompt text for fallback
+function buildFallbackPrompt(input: GenerateSingleTestQuestionInput): { systemInstruction: string; userPrompt: string } {
+  const isStrict = input.questionSource === 'strict';
+  const isAllTypes = input.questionType === 'all';
+  
+  const existingQuestionsText = input.existingQuestions.length > 0
+    ? input.existingQuestions.map(q => `- ${q}`).join('\n')
+    : '- (none yet)';
+
+  const systemInstruction = 'You are an expert test generator that creates one high-quality test question from an uploaded document.';
+  
+  const userPrompt = `Your main instruction is to generate a single question of the type specified in 'questionType'.
+
+${isAllTypes ? `The 'questionType' is 'all', so you must randomly choose one type from the following list for the question you will generate: "multiple choice", "fill-in-the-blank", "theory", or "true or false".
+You MUST set the 'type' field in your response to the chosen question type.` : `You MUST generate a '${input.questionType}' question. You should NOT include a 'type' field in your response.`}
+
+The question must have a genuine '${input.difficulty}' difficulty level.
+- 'easy' questions should be straightforward recall from the text.
+- 'medium' questions should require some interpretation or connection of ideas from different parts of the document.
+- 'hard' questions should require deep conceptual understanding, synthesis of multiple complex points, or application of knowledge in a new context.
+
+Your instructions for question generation source are as follows:
+${isStrict ? `The question and its answer must be taken *strictly* and *literally* from the text. The wording should be as close as possible to the source document.` : `The question should be *formed from* the document's content, allowing for rephrasing, synthesis, and conceptual understanding questions related to the topics. You can create scenarios or examples that test the application of the document's concepts.`}
+
+You MUST NOT generate a question that is already present in the "Existing Questions" list. Generate a new, unique question.
+
+Existing Questions:
+${existingQuestionsText}
+
+**CRITICAL INSTRUCTIONS FOR RESPONSE FORMAT:**
+- For **'multiple choice'**: You must provide the question text, an array of 4 choices, and the correct answer.
+- For **'true or false'**: You must provide the question statement and the boolean correct answer.
+- For **'fill-in-the-blank'**: You must provide the question sentence containing a blank, like "____".
+- For **'theory'**: You must provide an open-ended question.
+
+Document Content:
+\`\`\`
+${input.documentContent}
+\`\`\`
+
+Generate one unique question now. Return ONLY valid JSON, no markdown formatting.`;
+
+  return { systemInstruction, userPrompt };
+}
+
+// Parse response from secondary API
+function parseSecondaryResponse(rawResponse: string): GenerateSingleTestQuestionOutput {
+  try {
+    const cleaned = rawResponse
+      .replace(/```json\n?/g, '')
+      .replace(/```\n?/g, '')
+      .trim();
+    
+    const parsed = JSON.parse(cleaned);
+    
+    if (!parsed.question) {
+      throw new Error('Missing required "question" field');
+    }
+    
+    return parsed as GenerateSingleTestQuestionOutput;
+  } catch (error) {
+    console.error('Failed to parse secondary API response:', error);
+    throw new Error('Failed to parse AI response into test question format');
+  }
+}
+
 export async function generateSingleTestQuestion(input: GenerateSingleTestQuestionInput): Promise<GenerateSingleTestQuestionOutput> {
-  // Use fallback wrapper - will try Gemini first, then OpenRouter if needed
-  const result = await withFallback(async (modelName) => {
-    return await generateSingleTestQuestionFlow(input, modelName);
-  });
+  // Build fallback params
+  const fallbackParams = buildFallbackPrompt(input);
+
+  // Use dual Gemini fallback wrapper with fallback params
+  const result = await withDualGeminiFallback(
+    async () => {
+      return await generateSingleTestQuestionFlow(input);
+    },
+    {
+      systemInstruction: fallbackParams.systemInstruction,
+      userPrompt: fallbackParams.userPrompt,
+      parseResponse: parseSecondaryResponse
+    }
+  );
   
   // Manually add the type back in for the non-"all" cases.
   if (input.questionType !== 'all') {
@@ -123,15 +198,14 @@ Generate one unique question now.
 });
 
 const generateSingleTestQuestionFlow = async (
-  input: GenerateSingleTestQuestionInput,
-  modelName: string
+  input: GenerateSingleTestQuestionInput
 ): Promise<GenerateSingleTestQuestionOutput> => {
   const isStrict = input.questionSource === 'strict';
   const isAllTypes = input.questionType === 'all';
   
   const {output} = await prompt(
     {...input, isStrict, isAllTypes},
-    { model: modelName } // Use the provided model (Gemini or OpenRouter fallback)
+    { model: 'googleai/gemini-2.0-flash-exp' }
   );
   
   return output!;

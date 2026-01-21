@@ -362,12 +362,12 @@ export function TestView({ initialQuestions, documentInfo, settings, onTestFinis
                     : `Incorrect. The correct answer is ${String((currentQuestion as TrueFalseQuestion).correctAnswer)}.`;
                 validationResult = { isCorrect, feedback };
              } else {
+                // FIXED: Removed questionType and questionSource parameters
                 validationResult = await validateUserAnswer({
                     documentContent: documentInfo.text,
                     question: currentQuestion.question,
-                    questionType: currentQuestion.type,
                     userAnswer: userAnswer,
-                    questionSource: settings.questionSource,
+                    correctAnswer: 'correctAnswer' in currentQuestion ? String(currentQuestion.correctAnswer) : '',
                 });
              }
             
