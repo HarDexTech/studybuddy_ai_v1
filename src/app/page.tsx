@@ -14,6 +14,7 @@ export default function Home() {
     const [initialQuestions, setInitialQuestions] = useState<Question[]>([]);
     const [results, setResults] = useState<TestResult[]>([]);
     const [testSettings, setTestSettings] = useState<TestSettings | null>(null);
+    const [totalGeneratedQuestions, setTotalGeneratedQuestions] = useState<number>(0);
 
     const handleDocumentUploaded = (docText: string, docFile: { name: string, type: string, size: number }) => {
         setDocumentInfo({ text: docText, file: docFile });
@@ -30,8 +31,9 @@ export default function Home() {
         setView('testing');
     };
 
-    const handleTestFinished = (finalResults: TestResult[]) => {
+    const handleTestFinished = (finalResults: TestResult[], totalGenerated: number) => {
         setResults(finalResults);
+        setTotalGeneratedQuestions(totalGenerated);
         setView('results');
     };
 
@@ -41,6 +43,7 @@ export default function Home() {
         setDocumentInfo(null);
         setResults([]);
         setTestSettings(null);
+        setTotalGeneratedQuestions(0);
     };
 
     const renderView = () => {
@@ -59,7 +62,14 @@ export default function Home() {
                     />
                 );
             case 'results':
-                return <ResultsView results={results} onStartNew={handleStartNew} />;
+                return (
+                    <ResultsView 
+                        results={results} 
+                        onStartNew={handleStartNew} 
+                        requestedQuestionCount={testSettings?.numberOfQuestions}
+                        totalQuestionsGenerated={totalGeneratedQuestions}
+                    />
+                );
             default:
                 return <UploadView onDocumentUploaded={handleDocumentUploaded} onTestGenerated={handleTestGenerated} />;
         }

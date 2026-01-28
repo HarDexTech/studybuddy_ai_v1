@@ -94,7 +94,7 @@ export async function generateBatchTestQuestions(
   return withDualGeminiFallback(async () => {
     const {output} = await prompt(
       {...input, isStrict, isAllTypes},
-      { model: 'googleai/gemini-2.0-flash-exp' }
+      { model: 'googleai/gemini-2.5-flash' }
     );
     
     return output!;

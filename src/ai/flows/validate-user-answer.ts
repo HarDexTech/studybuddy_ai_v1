@@ -1,37 +1,43 @@
-'use server';
+"use server";
 /**
  * @fileOverview A flow to validate a user's answer to a question.
  */
 
-import {ai, withDualGeminiFallback} from '@/ai/genkit';
-import {z} from 'genkit';
+import { ai, withDualGeminiFallback } from "@/ai/genkit";
+import { z } from "genkit";
 
 const ValidateUserAnswerInputSchema = z.object({
   documentContent: z
     .string()
-    .describe('The text content of the study document.'),
-  question: z.string().describe('The question that was asked.'),
-  userAnswer: z.string().describe('The answer provided by the user.'),
-  correctAnswer: z.string().describe('The correct answer to the question.'),
+    .describe("The text content of the study document."),
+  question: z.string().describe("The question that was asked."),
+  userAnswer: z.string().describe("The answer provided by the user."),
+  correctAnswer: z.string().describe("The correct answer to the question."),
 });
-export type ValidateUserAnswerInput = z.infer<typeof ValidateUserAnswerInputSchema>;
+export type ValidateUserAnswerInput = z.infer<
+  typeof ValidateUserAnswerInputSchema
+>;
 
 const ValidateUserAnswerOutputSchema = z.object({
-  isCorrect: z.boolean().describe('Whether the user\'s answer is correct.'),
-  feedback: z.string().describe('Feedback on the user\'s answer.'),
+  isCorrect: z.boolean().describe("Whether the user's answer is correct."),
+  feedback: z.string().describe("Feedback on the user's answer."),
 });
-export type ValidateUserAnswerOutput = z.infer<typeof ValidateUserAnswerOutputSchema>;
+export type ValidateUserAnswerOutput = z.infer<
+  typeof ValidateUserAnswerOutputSchema
+>;
 
-export async function validateUserAnswer(input: ValidateUserAnswerInput): Promise<ValidateUserAnswerOutput> {
+export async function validateUserAnswer(
+  input: ValidateUserAnswerInput,
+): Promise<ValidateUserAnswerOutput> {
   return withDualGeminiFallback(async () => {
     return await validateUserAnswerFlow(input);
   });
 }
 
 const prompt = ai.definePrompt({
-  name: 'validateUserAnswerPrompt',
-  input: {schema: ValidateUserAnswerInputSchema},
-  output: {schema: ValidateUserAnswerOutputSchema},
+  name: "validateUserAnswerPrompt",
+  input: { schema: ValidateUserAnswerInputSchema },
+  output: { schema: ValidateUserAnswerOutputSchema },
   prompt: `You are a study assistant that validates user answers to questions.
 
 Evaluate whether the user's answer is correct by comparing it to the correct answer and the document content.
@@ -51,8 +57,10 @@ Provide helpful feedback.
 });
 
 const validateUserAnswerFlow = async (
-  input: ValidateUserAnswerInput
+  input: ValidateUserAnswerInput,
 ): Promise<ValidateUserAnswerOutput> => {
-  const {output} = await prompt(input, { model: 'googleai/gemini-2.0-flash-exp' });
+  const { output } = await prompt(input, {
+    model: "googleai/gemini-2.5-flash",
+  });
   return output!;
 };

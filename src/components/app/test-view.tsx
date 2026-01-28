@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { generateSingleTestQuestion } from '@/ai/flows/generate-single-test-question';
+import { generateBatchTestQuestions } from '@/ai/flows/generate-batch-test-questions';
 import { validateUserAnswer, type ValidateUserAnswerOutput } from '@/ai/flows/validate-user-answer';
 import { explainQuestion } from '@/ai/flows/explain-question';
 import type { TestResult, TestSettings, Question, MultipleChoiceQuestion, TrueFalseQuestion } from '@/lib/types';
@@ -39,7 +40,7 @@ type TestViewProps = {
     initialQuestions: Question[];
     documentInfo: { text: string };
     settings: TestSettings;
-    onTestFinished: (results: TestResult[]) => void;
+    onTestFinished: (results: TestResult[], totalGenerated: number) => void;
 };
 
 const validationSteps = [
@@ -47,6 +48,11 @@ const validationSteps = [
     'Comparing with the document...',
     'Finalizing feedback...',
 ];
+
+const BATCH_SIZE = 5;
+const BATCH_TIMEOUT = 60000; // 60 seconds for batch
+const INDIVIDUAL_TIMEOUT = 30000; // 30 seconds for individual
+const MAX_RETRIES = 1;
 
 // Fisher-Yates shuffle algorithm
 const shuffleArray = <T>(array: T[]): T[] => {
@@ -65,10 +71,8 @@ function AskAiDialog({ open, onOpenChange, documentText, question, onTimerPause,
 
     useEffect(() => {
         if (open) {
-            onTimerPause();
+            // Note: Timer does NOT pause for Ask AI dialog
             handleAskAi();
-        } else {
-            onTimerResume();
         }
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [open]);
@@ -93,7 +97,7 @@ function AskAiDialog({ open, onOpenChange, documentText, question, onTimerPause,
                 title: 'Error Getting Explanation',
                 description: errorMessage,
             });
-            onOpenChange(false); // Close dialog on error
+            onOpenChange(false);
         } finally {
             setIsLoading(false);
         }
@@ -160,6 +164,7 @@ export function TestView({ initialQuestions, documentInfo, settings, onTestFinis
     const backgroundGenerationStarted = useRef(false);
     const generationErrorToastId = useRef<string | null>(null);
     const [isAskAiDialogOpen, setIsAskAiDialogOpen] = useState(false);
+    const [networkLost, setNetworkLost] = useState(false);
 
     const totalQuestionsToGenerate = settings.numberOfQuestions;
     const currentQuestion = questions[currentQuestionIndex];
@@ -171,15 +176,26 @@ export function TestView({ initialQuestions, documentInfo, settings, onTestFinis
     const timerCallback = useRef<() => void>();
 
     const finishTest = useCallback((finalResults: TestResult[]) => {
-        onTestFinished(finalResults);
-    }, [onTestFinished]);
+        onTestFinished(finalResults, questions.length);
+    }, [onTestFinished, questions.length]);
 
-    // This effect contains the logic for a single timer tick.
+    // Check if next question is ready
+    const isNextQuestionReady = questions.length > currentQuestionIndex + 1;
+    const isTestFinished = currentQuestionIndex >= totalQuestionsToGenerate - 1;
+    
+    // Timer should pause ONLY when waiting for next question after submit
+    const shouldPauseTimer = isAnswered && !isNextQuestionReady && !isTestFinished;
+
+    // Timer logic
     useEffect(() => {
         timerCallback.current = () => {
-            if (isLoading || isGenerating || isTimerPaused) {
+            // Pause timer if waiting for next question
+            if (isLoading || shouldPauseTimer) {
+                setIsTimerPaused(true);
                 return;
             }
+            
+            setIsTimerPaused(false);
     
             setTimeLeft(prev => {
                 if (prev === null) return null;
@@ -216,9 +232,8 @@ export function TestView({ initialQuestions, documentInfo, settings, onTestFinis
                 return 0;
             });
         };
-    });
+    }, [isLoading, shouldPauseTimer, results, currentQuestion, questions, finishTest]);
 
-    // This effect sets up and tears down the interval.
     useEffect(() => {
         if (!settings.timerEnabled) {
             return;
@@ -229,10 +244,10 @@ export function TestView({ initialQuestions, documentInfo, settings, onTestFinis
         }, 1000);
 
         return () => clearInterval(intervalId);
-    }, [settings.timerEnabled, finishTest]);
+    }, [settings.timerEnabled]);
 
     
-    // Background question generation
+    // Smart background question generation with batching
     useEffect(() => {
         const generateRemainingQuestions = async () => {
             if (backgroundGenerationStarted.current || questions.length >= totalQuestionsToGenerate) {
@@ -241,71 +256,135 @@ export function TestView({ initialQuestions, documentInfo, settings, onTestFinis
             backgroundGenerationStarted.current = true;
             
             let currentGeneratedQuestions = [...questions];
+            let retryCount = 0;
 
-            for (let i = currentGeneratedQuestions.length; i < totalQuestionsToGenerate; i++) {
-                while (isLoading) { // Pause generation if validation is in progress
+            for (let i = currentGeneratedQuestions.length; i < totalQuestionsToGenerate; ) {
+                // Pause generation if validation is in progress
+                while (isLoading) {
                     await new Promise(resolve => setTimeout(resolve, 500));
                 }
 
+                const remaining = totalQuestionsToGenerate - i;
                 setIsGenerating(true);
+                
                 try {
-                    const result = await generateSingleTestQuestion({
-                        documentContent: documentInfo.text,
-                        questionType: settings.questionType,
-                        difficulty: settings.difficulty,
-                        questionSource: settings.questionSource,
-                        existingQuestions: currentGeneratedQuestions.map(q => q.question),
-                    });
-                    
-                    if (generationErrorToastId.current) {
-                        dismiss(generationErrorToastId.current);
-                        generationErrorToastId.current = null;
+                    if (remaining >= BATCH_SIZE) {
+                        // Use batch generation for 5+ questions
+                        console.log(`Generating batch of ${BATCH_SIZE} questions...`);
+                        
+                        const timeoutPromise = new Promise((_, reject) =>
+                            setTimeout(() => reject(new Error('Batch generation timeout')), BATCH_TIMEOUT)
+                        );
+                        
+                        const generationPromise = generateBatchTestQuestions({
+                            documentContent: documentInfo.text,
+                            questionType: settings.questionType,
+                            difficulty: settings.difficulty,
+                            questionSource: settings.questionSource,
+                            existingQuestions: currentGeneratedQuestions.map(q => q.question),
+                            batchSize: BATCH_SIZE,
+                        });
+
+                        const result = await Promise.race([generationPromise, timeoutPromise]) as any;
+                        
+                        if (generationErrorToastId.current) {
+                            dismiss(generationErrorToastId.current);
+                            generationErrorToastId.current = null;
+                        }
+                        
+                        currentGeneratedQuestions.push(...result.questions);
+                        setQuestions([...currentGeneratedQuestions]);
+                        i += result.questions.length;
+                        retryCount = 0; // Reset retry count on success
+                        
+                    } else {
+                        // Generate individually for < 5 questions
+                        console.log(`Generating individual question ${i + 1}...`);
+                        
+                        const timeoutPromise = new Promise((_, reject) =>
+                            setTimeout(() => reject(new Error('Individual generation timeout')), INDIVIDUAL_TIMEOUT)
+                        );
+                        
+                        const generationPromise = generateSingleTestQuestion({
+                            documentContent: documentInfo.text,
+                            questionType: settings.questionType,
+                            difficulty: settings.difficulty,
+                            questionSource: settings.questionSource,
+                            existingQuestions: currentGeneratedQuestions.map(q => q.question),
+                        });
+
+                        const result = await Promise.race([generationPromise, timeoutPromise]) as any;
+                        
+                        if (generationErrorToastId.current) {
+                            dismiss(generationErrorToastId.current);
+                            generationErrorToastId.current = null;
+                        }
+                        
+                        currentGeneratedQuestions.push(result as Question);
+                        setQuestions([...currentGeneratedQuestions]);
+                        i++;
+                        retryCount = 0; // Reset retry count on success
                     }
-                    currentGeneratedQuestions.push(result as Question);
-                    // Do not shuffle here to avoid re-ordering answered questions
-                    setQuestions([...currentGeneratedQuestions]);
                     
                 } catch (error) {
-                    console.error('Failed to generate a background question:', error);
+                    console.error('Failed to generate question(s):', error);
                     const errorMessage = (error as Error)?.message || 'An unknown error occurred.';
                     const isRateLimitError = errorMessage.includes('429');
                     const isServiceUnavailable = errorMessage.includes('503') || errorMessage.toLowerCase().includes('overloaded');
+                    const isTimeout = errorMessage.includes('timeout');
+                    const isNetworkError = errorMessage.includes('network') || errorMessage.includes('fetch');
 
                     if (isRateLimitError) {
                         toast({
                             variant: 'destructive',
                             title: 'AI Rate Limit Reached',
-                            description: "You've exceeded the free tier quota. No more questions can be generated at this time.",
+                            description: `You've exceeded the API quota. Generated ${currentGeneratedQuestions.length}/${totalQuestionsToGenerate} questions.`,
                         });
-                        // Stop trying to generate more questions
-                        break;
-                    } else if (isServiceUnavailable) {
-                        if (!generationErrorToastId.current) {
-                           const { id } = toast({
+                        break; // Stop trying
+                    } else if (isNetworkError) {
+                        setNetworkLost(true);
+                        toast({
+                            variant: 'destructive',
+                            title: 'Network Connection Lost',
+                            description: `Continuing with ${currentGeneratedQuestions.length} generated questions.`,
+                        });
+                        break; // Stop trying
+                    } else if (isServiceUnavailable || isTimeout) {
+                        // Retry logic
+                        if (retryCount < MAX_RETRIES) {
+                            retryCount++;
+                            if (!generationErrorToastId.current) {
+                                const { id } = toast({
+                                    variant: 'destructive',
+                                    title: 'AI Service Temporarily Unavailable',
+                                    description: `Retrying... (Attempt ${retryCount}/${MAX_RETRIES})`,
+                                });
+                                generationErrorToastId.current = id;
+                            }
+                            await new Promise(resolve => setTimeout(resolve, 5000)); // Wait 5s before retry
+                            // Don't increment i, will retry same question
+                        } else {
+                            toast({
                                 variant: 'destructive',
-                                title: 'AI Service Temporarily Unavailable',
-                                description: "The AI is overloaded. We'll keep trying to generate the next question in the background.",
+                                title: 'Question Generation Failed',
+                                description: `Continuing with ${currentGeneratedQuestions.length} questions after ${MAX_RETRIES} retries.`,
                             });
-                            generationErrorToastId.current = id;
+                            break; // Stop trying after max retries
                         }
-                        // Retry after a delay
-                        await new Promise(resolve => setTimeout(resolve, 5000));
-                        i--; // Decrement to retry the same question index
                     } else {
-                        // For other errors, maybe stop or show a different message
                         toast({
                             variant: 'destructive',
                             title: 'Question Generation Failed',
-                            description: "There was an error generating a new question. The test may not have the full number of questions.",
+                            description: `An unexpected error occurred. Continuing with ${currentGeneratedQuestions.length} questions.`,
                         });
-                        // Stop trying to generate more questions
-                        break;
+                        break; // Stop trying
                     }
                 } finally {
                     setIsGenerating(false);
                 }
             }
-             if (generationErrorToastId.current) {
+            
+            if (generationErrorToastId.current) {
                 dismiss(generationErrorToastId.current);
                 generationErrorToastId.current = null;
             }
@@ -313,7 +392,7 @@ export function TestView({ initialQuestions, documentInfo, settings, onTestFinis
 
         generateRemainingQuestions();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [isLoading]); // Rerun when loading state changes
+    }, [isLoading]);
 
 
     useEffect(() => {
@@ -362,7 +441,6 @@ export function TestView({ initialQuestions, documentInfo, settings, onTestFinis
                     : `Incorrect. The correct answer is ${String((currentQuestion as TrueFalseQuestion).correctAnswer)}.`;
                 validationResult = { isCorrect, feedback };
              } else {
-                // FIXED: Removed questionType and questionSource parameters
                 validationResult = await validateUserAnswer({
                     documentContent: documentInfo.text,
                     question: currentQuestion.question,
@@ -520,8 +598,6 @@ export function TestView({ initialQuestions, documentInfo, settings, onTestFinis
     };
     
     const questionsAvailable = questions.length;
-    const isNextQuestionReady = questions.length > currentQuestionIndex + 1;
-    const isTestFinished = currentQuestionIndex >= totalQuestionsToGenerate - 1;
 
 
     return (
@@ -544,7 +620,7 @@ export function TestView({ initialQuestions, documentInfo, settings, onTestFinis
                  <div className="flex items-center gap-4">
                     {timeLeft !== null && (
                         <div className="flex items-center gap-2 text-lg font-semibold text-primary shrink-0">
-                            {isLoading || isGenerating || isTimerPaused ? <Hourglass className="h-5 w-5 animate-spin" /> : <Timer className="h-5 w-5" />}
+                            {shouldPauseTimer || isTimerPaused ? <Hourglass className="h-5 w-5" /> : <Timer className="h-5 w-5" />}
                             <span>{formatTime(timeLeft)}</span>
                         </div>
                     )}
@@ -556,10 +632,12 @@ export function TestView({ initialQuestions, documentInfo, settings, onTestFinis
                       <CardTitle className="text-2xl font-headline">
                           Question {currentQuestionIndex + 1} of {totalQuestionsToGenerate}
                       </CardTitle>
-                      {questionsAvailable < totalQuestionsToGenerate && <div className='flex items-center gap-2 text-sm text-muted-foreground'>
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                        <span>Generating questions... ({questionsAvailable}/{totalQuestionsToGenerate})</span>
-                      </div>}
+                      {questionsAvailable < totalQuestionsToGenerate && (
+                        <div className='flex items-center gap-2 text-sm text-muted-foreground'>
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                          <span>Generating questions... ({questionsAvailable}/{totalQuestionsToGenerate})</span>
+                        </div>
+                      )}
                     </div>
                 </CardHeader>
                 <CardContent className="space-y-6">
@@ -633,7 +711,7 @@ export function TestView({ initialQuestions, documentInfo, settings, onTestFinis
                                  {isGenerating && !isNextQuestionReady ? (
                                     <>
                                         <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                                        <span>Preparing next question...</span>
+                                        <span>Generating next question...</span>
                                     </>
                                  ) : isTestFinished ? 'Finish Test' : 'Next Question'
                                  }

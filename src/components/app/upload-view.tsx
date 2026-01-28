@@ -4,7 +4,7 @@ import { useState, useRef, useEffect } from "react";
 import * as pdfjs from "pdfjs-dist";
 import mammoth from "mammoth";
 import JSZip from "jszip";
-import { generateSingleTestQuestion } from "@/ai/flows/generate-single-test-question";
+import { generateBatchTestQuestions } from "@/ai/flows/generate-batch-test-questions";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -24,6 +24,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Progress } from "@/components/ui/progress";
 import { useToast } from "@/hooks/use-toast";
 import {
   UploadCloud,
@@ -40,6 +42,7 @@ import {
   FileJson,
   FileType,
   History,
+  AlertTriangle,
 } from "lucide-react";
 import type { TestSettings, Question, CachedDocument } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -48,7 +51,7 @@ import { getRecentDocuments, addRecentDocument } from "@/lib/storage";
 type UploadViewProps = {
   onDocumentUploaded: (
     documentText: string,
-    file: { name: string; type: string; size: number }
+    file: { name: string; type: string; size: number },
   ) => void;
   onTestGenerated: (questions: Question[], settings: TestSettings) => void;
   existingDocument?: {
@@ -64,8 +67,10 @@ const parsingSteps = [
 ];
 
 const INITIAL_BATCH_SIZE = 5;
-const BATCHING_THRESHOLD = 10;
+const MIN_QUESTIONS = 5;
+const MAX_QUESTIONS = 50;
 const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
+const WARNING_THRESHOLD = 20;
 
 function RecentDocuments({
   onSelect,
@@ -136,24 +141,51 @@ export function UploadView({
 }: UploadViewProps) {
   const { toast } = useToast();
   const [file, setFile] = useState<File | null>(
-    existingDocument?.file ? new File([], existingDocument.file.name) : null
+    existingDocument?.file ? new File([], existingDocument.file.name) : null,
   );
 
   const [settings, setSettings] = useState<TestSettings>({
     questionType: "multiple choice",
-    numberOfQuestions: 5,
+    numberOfQuestions: 10,
     timerEnabled: false,
     timerDuration: 10,
     difficulty: "medium",
     questionSource: "strict",
   });
+
   const [isLoading, setIsLoading] = useState(false);
   const [loadingMessage, setLoadingMessage] = useState("");
   const [isParsing, setIsParsing] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
+  const [generationProgress, setGenerationProgress] = useState(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const isTestCreationMode = !!existingDocument;
+
+  // Question count validation
+  const questionCountError =
+    settings.numberOfQuestions < MIN_QUESTIONS
+      ? `Minimum ${MIN_QUESTIONS} questions required`
+      : settings.numberOfQuestions > MAX_QUESTIONS
+        ? `Maximum ${MAX_QUESTIONS} questions allowed`
+        : null;
+
+  // Show warning for 20+ questions
+  const showWarning = settings.numberOfQuestions >= WARNING_THRESHOLD;
+
+  // Beforeunload warning when generating
+  useEffect(() => {
+    if (!isLoading || !isTestCreationMode) return;
+
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = "Questions are being generated. Leave anyway?";
+      return e.returnValue;
+    };
+
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
+  }, [isLoading, isTestCreationMode]);
 
   useEffect(() => {
     let interval: NodeJS.Timeout;
@@ -175,7 +207,7 @@ export function UploadView({
     if (selectedFile.size > MAX_FILE_SIZE) {
       handleError(
         `File size exceeds the 50MB limit. Please upload a smaller document.`,
-        "File Too Large"
+        "File Too Large",
       );
       if (fileInputRef.current) {
         fileInputRef.current.value = "";
@@ -196,7 +228,7 @@ export function UploadView({
           arrayBufferReader.onload = (e) =>
             resolve(e.target?.result as ArrayBuffer);
           arrayBufferReader.onerror = reject;
-        }
+        },
       );
 
       let text = "";
@@ -234,14 +266,13 @@ export function UploadView({
               const parser = new DOMParser();
               const xmlDoc = parser.parseFromString(
                 xmlContent,
-                "application/xml"
+                "application/xml",
               );
               const textNodes = xmlDoc.getElementsByTagName("a:t");
               let slideText = "";
               for (let i = 0; i < textNodes.length; i++) {
                 slideText += textNodes[i].textContent + " ";
               }
-              // Extract slide number to maintain order if possible
               const slideNumMatch = relativePath.match(/slide(\d+)\.xml/);
               const slideNum = slideNumMatch
                 ? parseInt(slideNumMatch[1], 10)
@@ -254,7 +285,6 @@ export function UploadView({
 
         await Promise.all(slidePromises);
 
-        // Sort slides by their number and join the text
         text = (slideTexts as any[])
           .sort((a, b) => a.num - b.num)
           .map((s) => s.text)
@@ -266,7 +296,7 @@ export function UploadView({
         text = new TextDecoder().decode(arrayBufferResult);
       } else {
         handleError(
-          "Unsupported file type. Please use PDF, DOCX, PPTX, or a plain text file."
+          "Unsupported file type. Please use PDF, DOCX, PPTX, or a plain text file.",
         );
         return;
       }
@@ -274,7 +304,7 @@ export function UploadView({
       if (!text.trim()) {
         handleError(
           "Could not extract any text from the document. It might be empty or scanned as an image.",
-          "No Text Found"
+          "No Text Found",
         );
         return;
       }
@@ -312,6 +342,7 @@ export function UploadView({
     toast({ variant: "destructive", title: title, description: message });
     setIsLoading(false);
     setIsParsing(false);
+    setGenerationProgress(0);
     if (title !== "AI Service Unavailable" && !isTestCreationMode) {
       setFile(null);
       if (fileInputRef.current) {
@@ -330,45 +361,49 @@ export function UploadView({
       return;
     }
 
+    // Validate question count
+    if (
+      settings.numberOfQuestions < MIN_QUESTIONS ||
+      settings.numberOfQuestions > MAX_QUESTIONS
+    ) {
+      toast({
+        variant: "destructive",
+        title: "Invalid Question Count",
+        description:
+          questionCountError || "Please enter a valid number of questions.",
+      });
+      return;
+    }
+
     setIsLoading(true);
+    setGenerationProgress(0);
 
-    const useBatching = settings.numberOfQuestions >= BATCHING_THRESHOLD;
-    const questionsToGenerate = useBatching
-      ? INITIAL_BATCH_SIZE
-      : settings.numberOfQuestions;
+    setLoadingMessage(`Generating initial ${INITIAL_BATCH_SIZE} questions...`);
 
-    setLoadingMessage(
-      useBatching
-        ? `Generating initial batch of ${questionsToGenerate} questions...`
-        : "Warming up the AI..."
-    );
-
-    const generatedQuestions: Question[] = [];
     try {
-      for (let i = 0; i < questionsToGenerate; i++) {
-        if (!useBatching) {
-          setLoadingMessage(
-            `Generating question ${i + 1} of ${settings.numberOfQuestions}...`
-          );
-        }
-        const result = await generateSingleTestQuestion({
-          documentContent: existingDocument.text,
-          questionType: settings.questionType,
-          difficulty: settings.difficulty,
-          questionSource: settings.questionSource,
-          existingQuestions: generatedQuestions.map((q) => q.question),
-        });
+      // Use BATCH generation for initial 5 questions
+      const result = await generateBatchTestQuestions({
+        documentContent: existingDocument.text,
+        questionType: settings.questionType,
+        difficulty: settings.difficulty,
+        questionSource: settings.questionSource,
+        existingQuestions: [],
+        batchSize: INITIAL_BATCH_SIZE,
+      });
 
-        generatedQuestions.push(result as Question);
-      }
+      setGenerationProgress(100);
 
-      if (generatedQuestions.length > 0) {
-        onTestGenerated(generatedQuestions, settings);
-      } else {
+      // Check if we generated minimum required questions
+      if (result.questions.length < MIN_QUESTIONS) {
         handleError(
-          "The AI couldn't generate a test from this document. Please try another one."
+          `Unable to generate minimum ${MIN_QUESTIONS} questions. Please try again or reduce document size.`,
+          "Insufficient Questions Generated",
         );
+        return;
       }
+
+      // Success! Move to test view
+      onTestGenerated(result.questions as Question[], settings);
     } catch (error) {
       console.error(error);
       const errorMessage =
@@ -381,18 +416,19 @@ export function UploadView({
       if (isRateLimitError) {
         handleError(
           "You've exceeded the free tier quota for the AI. Please wait a moment and try again, or upgrade your plan.",
-          "AI Rate Limit Reached"
+          "AI Rate Limit Reached",
         );
       } else if (isServiceUnavailable) {
         handleError(
           "The AI model is temporarily overloaded. Please wait a moment and try generating the test again.",
-          "AI Service Unavailable"
+          "AI Service Unavailable",
         );
       } else {
         handleError("An unexpected error occurred while generating the test.");
       }
     } finally {
       setIsLoading(false);
+      setGenerationProgress(0);
     }
   };
 
@@ -457,6 +493,7 @@ export function UploadView({
                       questionType: value as TestSettings["questionType"],
                     })
                   }
+                  disabled={isLoading}
                 >
                   <SelectTrigger id="question-type" className="w-full">
                     <SelectValue placeholder="Select type" />
@@ -491,7 +528,9 @@ export function UploadView({
                 </Select>
               </div>
               <div className="space-y-2">
-                <Label htmlFor="num-questions">Number of Questions</Label>
+                <Label htmlFor="num-questions">
+                  Number of Questions ({MIN_QUESTIONS}-{MAX_QUESTIONS})
+                </Label>
                 <Input
                   id="num-questions"
                   type="number"
@@ -500,17 +539,47 @@ export function UploadView({
                     setSettings({
                       ...settings,
                       numberOfQuestions: Math.min(
-                        50,
-                        Math.max(1, parseInt(e.target.value, 10) || 1)
+                        MAX_QUESTIONS,
+                        Math.max(1, parseInt(e.target.value, 10) || 1),
                       ),
                     })
                   }
-                  min="1"
-                  max="50"
-                  className="w-full"
+                  min={MIN_QUESTIONS}
+                  max={MAX_QUESTIONS}
+                  className={cn(
+                    "w-full",
+                    questionCountError &&
+                      "border-destructive focus-visible:ring-destructive",
+                  )}
+                  disabled={isLoading}
                 />
+                {questionCountError && (
+                  <p className="text-sm text-destructive flex items-center gap-1">
+                    <AlertTriangle className="w-3 h-3" />
+                    {questionCountError}
+                  </p>
+                )}
               </div>
             </div>
+
+            {/* Warning for 20+ questions */}
+            {showWarning && !questionCountError && (
+              <Alert
+                variant="destructive"
+                className="border-orange-500/50 bg-orange-500/10"
+              >
+                <AlertTriangle className="h-4 w-4 text-orange-500" />
+                <AlertTitle className="text-orange-600 dark:text-orange-400">
+                  Large Test Warning
+                </AlertTitle>
+                <AlertDescription className="text-orange-600/90 dark:text-orange-400/90">
+                  Tests with {WARNING_THRESHOLD}+ questions may take longer to
+                  generate and could approach API rate limits. Consider breaking
+                  into smaller tests for better performance.
+                </AlertDescription>
+              </Alert>
+            )}
+
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               <div className="space-y-2">
                 <Label htmlFor="difficulty">Difficulty Level</Label>
@@ -522,6 +591,7 @@ export function UploadView({
                       difficulty: value as TestSettings["difficulty"],
                     })
                   }
+                  disabled={isLoading}
                 >
                   <SelectTrigger id="difficulty" className="w-full">
                     <SelectValue placeholder="Select difficulty" />
@@ -555,6 +625,7 @@ export function UploadView({
                       questionSource: value as TestSettings["questionSource"],
                     })
                   }
+                  disabled={isLoading}
                 >
                   <SelectTrigger id="question-source" className="w-full">
                     <SelectValue placeholder="Select source" />
@@ -582,6 +653,7 @@ export function UploadView({
                   onCheckedChange={(checked) =>
                     setSettings({ ...settings, timerEnabled: checked })
                   }
+                  disabled={isLoading}
                 />
                 <Label
                   htmlFor="timer-enabled"
@@ -606,15 +678,29 @@ export function UploadView({
                       })
                     }
                     min="1"
+                    disabled={isLoading}
                   />
                 </div>
               )}
             </div>
+
+            {/* Generation Progress */}
+            {isLoading && (
+              <div className="space-y-3 animate-in fade-in-50 duration-300">
+                <div className="flex items-center justify-between text-sm">
+                  <span className="text-muted-foreground">
+                    Generating initial questions...
+                  </span>
+                  <span className="font-semibold">{generationProgress}%</span>
+                </div>
+                <Progress value={generationProgress} className="h-2" />
+              </div>
+            )}
           </CardContent>
           <CardFooter>
             <Button
               onClick={handleGenerateTest}
-              disabled={isLoading}
+              disabled={isLoading || !!questionCountError}
               className="w-full"
               size="lg"
             >
@@ -645,7 +731,7 @@ export function UploadView({
               "border-2 border-dashed rounded-lg p-8 text-center cursor-pointer transition-colors",
               isDragging
                 ? "border-primary bg-primary/10"
-                : "border-border hover:border-primary/50"
+                : "border-border hover:border-primary/50",
             )}
             onClick={() => fileInputRef.current?.click()}
             onDrop={handleDrop}

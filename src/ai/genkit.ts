@@ -8,7 +8,7 @@ const geminiPlugin = googleAI({
 
 export const ai = genkit({
   plugins: [geminiPlugin],
-  model: 'googleai/gemini-2.0-flash-exp', // Using 2.0 Flash (free tier: 1500 RPD, 15 RPM)
+  model: 'googleai/gemini-2.5-flash', // Using 2.5 Flash (stable, better limits)
 });
 
 // Helper function to check if error is rate limit or quota
@@ -106,7 +106,7 @@ export async function withDualGeminiFallback<T>(
       
       try {
         const rawResponse = await callGeminiDirectly(
-          'gemini-2.0-flash-exp',
+          'gemini-2.5-flash',
           fallbackParams.systemInstruction,
           fallbackParams.userPrompt
         );
