@@ -1,53 +1,56 @@
 "use server";
 /**
- * @fileOverview A flow to answer a question about the document content.
+ * @fileOverview A flow to explain why an answer to a question is correct.
  */
 
 import { ai, withDualGeminiFallback } from "@/ai/genkit";
 import { z } from "genkit";
 
-const AnswerDocumentQuestionInputSchema = z.object({
+const ExplainQuestionInputSchema = z.object({
   documentContent: z
     .string()
     .describe("The text content of the study document."),
-  question: z.string().describe("The question to answer about the document."),
+  question: z.string().describe("The question that was asked."),
+  correctAnswer: z.string().describe("The correct answer to the question."),
 });
-export type AnswerDocumentQuestionInput = z.infer<
-  typeof AnswerDocumentQuestionInputSchema
->;
+export type ExplainQuestionInput = z.infer<typeof ExplainQuestionInputSchema>;
 
-const AnswerDocumentQuestionOutputSchema = z.object({
-  answer: z
+const ExplainQuestionOutputSchema = z.object({
+  explanation: z
     .string()
-    .describe("The answer to the question based on the document content."),
+    .describe(
+      "A detailed explanation of the question and why the provided answer is correct, based on the document content.",
+    ),
 });
-export type AnswerDocumentQuestionOutput = z.infer<
-  typeof AnswerDocumentQuestionOutputSchema
->;
+export type ExplainQuestionOutput = z.infer<typeof ExplainQuestionOutputSchema>;
 
-export async function answerDocumentQuestion(
-  input: AnswerDocumentQuestionInput,
-): Promise<AnswerDocumentQuestionOutput> {
+export async function explainQuestion(
+  input: ExplainQuestionInput,
+): Promise<ExplainQuestionOutput> {
   const systemInstruction =
-    "You are a study assistant that answers questions about document content.";
+    "You are a study assistant that helps students understand why answers to questions are correct.";
 
-  const userPrompt = `Based on the document content provided below, answer the following question accurately and concisely.
+  const userPrompt = `Given the document content, the question, and the correct answer, provide a detailed explanation of:
+1. What the question is asking
+2. Why the provided answer is correct
+3. Supporting information from the document
 
 Question: ${input.question}
+Correct Answer: ${input.correctAnswer}
 
 Document Content:
 \`\`\`
 ${input.documentContent}
 \`\`\`
 
-Provide a clear, accurate answer based on the document. Return ONLY valid JSON in this format:
+Provide a clear, educational explanation. Return ONLY valid JSON in this format:
 {
-  "answer": "your answer here"
+  "explanation": "your detailed explanation here"
 }`;
 
   return withDualGeminiFallback(
     async () => {
-      return await answerDocumentQuestionFlow(input);
+      return await explainQuestionFlow(input);
     },
     {
       systemInstruction,
@@ -57,34 +60,38 @@ Provide a clear, accurate answer based on the document. Return ONLY valid JSON i
           .replace(/```json\n?/g, "")
           .replace(/```\n?/g, "")
           .trim();
-        return JSON.parse(cleaned) as AnswerDocumentQuestionOutput;
+        return JSON.parse(cleaned) as ExplainQuestionOutput;
       },
     },
   );
 }
 
 const prompt = ai.definePrompt({
-  name: "answerDocumentQuestionPrompt",
-  input: { schema: AnswerDocumentQuestionInputSchema },
-  output: { schema: AnswerDocumentQuestionOutputSchema },
-  prompt: `You are a study assistant that answers questions about document content.
+  name: "explainQuestionPrompt",
+  input: { schema: ExplainQuestionInputSchema },
+  output: { schema: ExplainQuestionOutputSchema },
+  prompt: `You are a study assistant that helps students understand why answers to questions are correct.
 
-Based on the document content provided below, answer the following question accurately and concisely.
+Given the document content, the question, and the correct answer, provide a detailed explanation of:
+1. What the question is asking
+2. Why the provided answer is correct
+3. Supporting information from the document
 
 Question: {{question}}
+Correct Answer: {{correctAnswer}}
 
 Document Content:
 \`\`\`
 {{{documentContent}}}
 \`\`\`
 
-Provide a clear, accurate answer based on the document.
+Provide a clear, educational explanation.
 `,
 });
 
-const answerDocumentQuestionFlow = async (
-  input: AnswerDocumentQuestionInput,
-): Promise<AnswerDocumentQuestionOutput> => {
+const explainQuestionFlow = async (
+  input: ExplainQuestionInput,
+): Promise<ExplainQuestionOutput> => {
   const { output } = await prompt(input, {
     model: "googleai/gemini-2.5-flash",
   });
