@@ -29,9 +29,45 @@ export type ValidateUserAnswerOutput = z.infer<
 export async function validateUserAnswer(
   input: ValidateUserAnswerInput,
 ): Promise<ValidateUserAnswerOutput> {
-  return withDualGeminiFallback(async () => {
-    return await validateUserAnswerFlow(input);
-  });
+  const systemInstruction =
+    "You are a study assistant that validates user answers to questions.";
+
+  const userPrompt = `Evaluate whether the user's answer is correct by comparing it to the correct answer and the document content.
+
+Question: ${input.question}
+User's Answer: ${input.userAnswer}
+Correct Answer: ${input.correctAnswer}
+
+Document Content:
+\`\`\`
+${input.documentContent}
+\`\`\`
+
+Determine if the user's answer is correct (it doesn't need to be word-for-word, but should convey the same meaning).
+Provide helpful feedback.
+
+Return ONLY valid JSON in this format:
+{
+  "isCorrect": true or false,
+  "feedback": "your feedback here"
+}`;
+
+  return withDualGeminiFallback(
+    async () => {
+      return await validateUserAnswerFlow(input);
+    },
+    {
+      systemInstruction,
+      userPrompt,
+      parseResponse: (rawResponse: string) => {
+        const cleaned = rawResponse
+          .replace(/```json\n?/g, "")
+          .replace(/```\n?/g, "")
+          .trim();
+        return JSON.parse(cleaned) as ValidateUserAnswerOutput;
+      },
+    },
+  );
 }
 
 const prompt = ai.definePrompt({

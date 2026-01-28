@@ -28,9 +28,39 @@ export type AnswerDocumentQuestionOutput = z.infer<
 export async function answerDocumentQuestion(
   input: AnswerDocumentQuestionInput,
 ): Promise<AnswerDocumentQuestionOutput> {
-  return withDualGeminiFallback(async () => {
-    return await answerDocumentQuestionFlow(input);
-  });
+  const systemInstruction =
+    "You are a study assistant that answers questions about document content.";
+
+  const userPrompt = `Based on the document content provided below, answer the following question accurately and concisely.
+
+Question: ${input.question}
+
+Document Content:
+\`\`\`
+${input.documentContent}
+\`\`\`
+
+Provide a clear, accurate answer based on the document. Return ONLY valid JSON in this format:
+{
+  "answer": "your answer here"
+}`;
+
+  return withDualGeminiFallback(
+    async () => {
+      return await answerDocumentQuestionFlow(input);
+    },
+    {
+      systemInstruction,
+      userPrompt,
+      parseResponse: (rawResponse: string) => {
+        const cleaned = rawResponse
+          .replace(/```json\n?/g, "")
+          .replace(/```\n?/g, "")
+          .trim();
+        return JSON.parse(cleaned) as AnswerDocumentQuestionOutput;
+      },
+    },
+  );
 }
 
 const prompt = ai.definePrompt({
