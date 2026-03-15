@@ -1,18 +1,18 @@
-"use server";
+'use server';
 /**
  * @fileOverview A flow to validate a user's answer to a question.
  */
 
-import { ai, withDualGeminiFallback } from "@/ai/genkit";
-import { z } from "genkit";
+import { ai, withDualGeminiFallback } from '@/ai/genkit';
+import { z } from 'genkit';
 
 const ValidateUserAnswerInputSchema = z.object({
   documentContent: z
     .string()
-    .describe("The text content of the study document."),
-  question: z.string().describe("The question that was asked."),
-  userAnswer: z.string().describe("The answer provided by the user."),
-  correctAnswer: z.string().describe("The correct answer to the question."),
+    .describe('The text content of the study document.'),
+  question: z.string().describe('The question that was asked.'),
+  userAnswer: z.string().describe('The answer provided by the user.'),
+  correctAnswer: z.string().describe('The correct answer to the question.'),
 });
 export type ValidateUserAnswerInput = z.infer<
   typeof ValidateUserAnswerInputSchema
@@ -30,9 +30,13 @@ export async function validateUserAnswer(
   input: ValidateUserAnswerInput,
 ): Promise<ValidateUserAnswerOutput> {
   const systemInstruction =
-    "You are a study assistant that validates user answers to questions.";
+    'You are a study assistant that validates user answers to questions.';
 
   const userPrompt = `Evaluate whether the user's answer is correct by comparing it to the correct answer and the document content.
+
+If the provided correct answer is missing, empty, or unclear, first infer the best expected answer from the question.
+When the document does not contain enough information, use reliable general subject knowledge to infer the expected answer.
+Then grade the user's answer against that inferred expected answer.
 
 Question: ${input.question}
 User's Answer: ${input.userAnswer}
@@ -61,8 +65,8 @@ Return ONLY valid JSON in this format:
       userPrompt,
       parseResponse: (rawResponse: string) => {
         const cleaned = rawResponse
-          .replace(/```json\n?/g, "")
-          .replace(/```\n?/g, "")
+          .replace(/```json\n?/g, '')
+          .replace(/```\n?/g, '')
           .trim();
         return JSON.parse(cleaned) as ValidateUserAnswerOutput;
       },
@@ -71,12 +75,16 @@ Return ONLY valid JSON in this format:
 }
 
 const prompt = ai.definePrompt({
-  name: "validateUserAnswerPrompt",
+  name: 'validateUserAnswerPrompt',
   input: { schema: ValidateUserAnswerInputSchema },
   output: { schema: ValidateUserAnswerOutputSchema },
   prompt: `You are a study assistant that validates user answers to questions.
 
 Evaluate whether the user's answer is correct by comparing it to the correct answer and the document content.
+
+If the provided correct answer is missing, empty, or unclear, first infer the best expected answer from the question.
+When the document does not contain enough information, use reliable general subject knowledge to infer the expected answer.
+Then grade the user's answer against that inferred expected answer.
 
 Question: {{question}}
 User's Answer: {{userAnswer}}
@@ -96,7 +104,7 @@ const validateUserAnswerFlow = async (
   input: ValidateUserAnswerInput,
 ): Promise<ValidateUserAnswerOutput> => {
   const { output } = await prompt(input, {
-    model: "googleai/gemini-2.5-flash",
+    model: 'googleai/gemini-2.5-flash',
   });
   return output!;
 };

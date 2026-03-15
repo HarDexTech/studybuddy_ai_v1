@@ -1,4 +1,4 @@
-"use server";
+'use server';
 /**
  * @fileOverview A flow to generate a single test question with automatic fallback.
  *
@@ -7,32 +7,32 @@
  * - GenerateSingleTestQuestionOutput - The return type for the function.
  */
 
-import { ai, withDualGeminiFallback } from "@/ai/genkit";
-import { z } from "genkit";
+import { ai, withDualGeminiFallback } from '@/ai/genkit';
+import { z } from 'genkit';
 
 const GenerateSingleTestQuestionInputSchema = z.object({
   documentContent: z
     .string()
-    .describe("The text content of the study document."),
+    .describe('The text content of the study document.'),
   questionType: z
     .enum([
-      "multiple choice",
-      "fill-in-the-blank",
-      "theory",
-      "true or false",
-      "all",
+      'multiple choice',
+      'fill-in-the-blank',
+      'theory',
+      'true or false',
+      'all',
     ])
-    .describe("The type of question for the generated test."),
+    .describe('The type of question for the generated test.'),
   difficulty: z
-    .enum(["easy", "medium", "hard"])
-    .describe("The difficulty level of the question."),
+    .enum(['easy', 'medium', 'hard'])
+    .describe('The difficulty level of the question.'),
   questionSource: z
-    .enum(["strict", "formed"])
-    .describe("The source of the question."),
+    .enum(['strict', 'formed'])
+    .describe('The source of the question.'),
   existingQuestions: z
     .array(z.string())
     .describe(
-      "An array of question texts that have already been generated in this test session to avoid duplicates.",
+      'An array of question texts that have already been generated in this test session to avoid duplicates.',
     ),
 });
 export type GenerateSingleTestQuestionInput = z.infer<
@@ -40,20 +40,20 @@ export type GenerateSingleTestQuestionInput = z.infer<
 >;
 
 const MultipleChoiceSchema = z.object({
-  question: z.string().describe("The multiple choice question text."),
+  question: z.string().describe('The multiple choice question text.'),
   choices: z
     .array(z.string())
     .min(4)
     .max(4)
-    .describe("An array of exactly 4 possible answers."),
-  correctAnswer: z.string().describe("The correct answer from the choices."),
+    .describe('An array of exactly 4 possible answers.'),
+  correctAnswer: z.string().describe('The correct answer from the choices.'),
 });
 
 const TrueFalseSchema = z.object({
-  question: z.string().describe("The true or false statement."),
+  question: z.string().describe('The true or false statement.'),
   correctAnswer: z
     .boolean()
-    .describe("Whether the statement is true or false."),
+    .describe('Whether the statement is true or false.'),
 });
 
 const FillInTheBlankSchema = z.object({
@@ -63,22 +63,22 @@ const FillInTheBlankSchema = z.object({
 });
 
 const TheorySchema = z.object({
-  question: z.string().describe("The open-ended theory question."),
+  question: z.string().describe('The open-ended theory question.'),
 });
 
 const AllTypesSchema = z.object({
   type: z
-    .enum(["multiple choice", "fill-in-the-blank", "theory", "true or false"])
-    .describe("The type of question."),
-  question: z.string().describe("The question text."),
+    .enum(['multiple choice', 'fill-in-the-blank', 'theory', 'true or false'])
+    .describe('The type of question.'),
+  question: z.string().describe('The question text.'),
   choices: z
     .array(z.string())
     .optional()
-    .describe("The possible answers for multiple choice."),
+    .describe('The possible answers for multiple choice.'),
   correctAnswer: z
     .union([z.string(), z.boolean()])
     .optional()
-    .describe("The correct answer."),
+    .describe('The correct answer.'),
 });
 
 const GenerateSingleTestQuestionOutputSchema = z.union([
@@ -97,16 +97,16 @@ function buildFallbackPrompt(input: GenerateSingleTestQuestionInput): {
   systemInstruction: string;
   userPrompt: string;
 } {
-  const isStrict = input.questionSource === "strict";
-  const isAllTypes = input.questionType === "all";
+  const isStrict = input.questionSource === 'strict';
+  const isAllTypes = input.questionType === 'all';
 
   const existingQuestionsText =
     input.existingQuestions.length > 0
-      ? input.existingQuestions.map((q) => `- ${q}`).join("\n")
-      : "- (none yet)";
+      ? input.existingQuestions.map((q) => `- ${q}`).join('\n')
+      : '- (none yet)';
 
   const systemInstruction =
-    "You are an expert test generator that creates one high-quality test question from an uploaded document.";
+    'You are an expert test generator that creates one high-quality test question from an uploaded document.';
 
   const userPrompt = `Your main instruction is to generate a single question of the type specified in 'questionType'.
 
@@ -124,6 +124,9 @@ The question must have a genuine '${input.difficulty}' difficulty level.
 
 Your instructions for question generation source are as follows:
 ${isStrict ? `The question and its answer must be taken *strictly* and *literally* from the text. The wording should be as close as possible to the source document.` : `The question should be *formed from* the document's content, allowing for rephrasing, synthesis, and conceptual understanding questions related to the topics. You can create scenarios or examples that test the application of the document's concepts.`}
+
+If the document appears to be a past-question or question-only material where explicit answers are not provided, you should infer the best correct answer using reliable subject knowledge and context from the question itself.
+Do not leave a multiple-choice or true-or-false item without a best-answer decision.
 
 You MUST NOT generate a question that is already present in the "Existing Questions" list. Generate a new, unique question.
 
@@ -152,8 +155,8 @@ function parseSecondaryResponse(
 ): GenerateSingleTestQuestionOutput {
   try {
     const cleaned = rawResponse
-      .replace(/```json\n?/g, "")
-      .replace(/```\n?/g, "")
+      .replace(/```json\n?/g, '')
+      .replace(/```\n?/g, '')
       .trim();
 
     const parsed = JSON.parse(cleaned);
@@ -164,8 +167,8 @@ function parseSecondaryResponse(
 
     return parsed as GenerateSingleTestQuestionOutput;
   } catch (error) {
-    console.error("Failed to parse secondary API response:", error);
-    throw new Error("Failed to parse AI response into test question format");
+    console.error('Failed to parse secondary API response:', error);
+    throw new Error('Failed to parse AI response into test question format');
   }
 }
 
@@ -188,7 +191,7 @@ export async function generateSingleTestQuestion(
   );
 
   // Manually add the type back in for the non-"all" cases.
-  if (input.questionType !== "all") {
+  if (input.questionType !== 'all') {
     return {
       type: input.questionType,
       ...result,
@@ -198,7 +201,7 @@ export async function generateSingleTestQuestion(
 }
 
 const prompt = ai.definePrompt({
-  name: "generateSingleTestQuestionPrompt",
+  name: 'generateSingleTestQuestionPrompt',
   input: {
     schema: GenerateSingleTestQuestionInputSchema.extend({
       isStrict: z.boolean(),
@@ -228,6 +231,9 @@ The question and its answer must be taken *strictly* and *literally* from the te
 The question should be *formed from* the document's content, allowing for rephrasing, synthesis, and conceptual understanding questions related to the topics. You can create scenarios or examples that test the application of the document's concepts.
 {{/if}}
 
+If the document appears to be a past-question or question-only material where explicit answers are not provided, infer the best correct answer using reliable subject knowledge and context from the question itself.
+For multiple-choice and true-or-false questions, always provide a best-answer decision.
+
 You MUST NOT generate a question that is already present in the "Existing Questions" list. Generate a new, unique question.
 
 Existing Questions:
@@ -253,12 +259,12 @@ Generate one unique question now.
 const generateSingleTestQuestionFlow = async (
   input: GenerateSingleTestQuestionInput,
 ): Promise<GenerateSingleTestQuestionOutput> => {
-  const isStrict = input.questionSource === "strict";
-  const isAllTypes = input.questionType === "all";
+  const isStrict = input.questionSource === 'strict';
+  const isAllTypes = input.questionType === 'all';
 
   const { output } = await prompt(
     { ...input, isStrict, isAllTypes },
-    { model: "googleai/gemini-2.5-flash" },
+    { model: 'googleai/gemini-2.5-flash' },
   );
 
   return output!;

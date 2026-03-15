@@ -1,13 +1,16 @@
-'use server';
+export async function GET() {
+  return Response.json({
+    ok: true,
+    message: 'API route is available.',
+  });
+}
 
-export const config = {
-  api: {
-    bodyParser: {
-      sizeLimit: '50mb',
+export async function POST() {
+  return Response.json(
+    {
+      ok: false,
+      message: 'No API handler is configured for this endpoint.',
     },
-  },
-};
-
-// This file can be empty or minimal since your AI flows 
-// are called directly from your components as server actions
-// You don't need special routing here
+    { status: 501 },
+  );
+}

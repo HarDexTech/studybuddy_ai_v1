@@ -1,11 +1,11 @@
-"use client";
+'use client';
 
-import { useState, useRef, useEffect } from "react";
-import * as pdfjs from "pdfjs-dist";
-import mammoth from "mammoth";
-import JSZip from "jszip";
-import { generateBatchTestQuestions } from "@/ai/flows/generate-batch-test-questions";
-import { Button } from "@/components/ui/button";
+import { useState, useRef, useEffect } from 'react';
+import * as pdfjs from 'pdfjs-dist';
+import mammoth from 'mammoth';
+import JSZip from 'jszip';
+import { generateBatchTestQuestions } from '@/ai/flows/generate-batch-test-questions';
+import { Button } from '@/components/ui/button';
 import {
   Card,
   CardContent,
@@ -13,20 +13,21 @@ import {
   CardFooter,
   CardHeader,
   CardTitle,
-} from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
+} from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
+import { Label } from '@/components/ui/label';
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from "@/components/ui/select";
-import { Switch } from "@/components/ui/switch";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Progress } from "@/components/ui/progress";
-import { useToast } from "@/hooks/use-toast";
+} from '@/components/ui/select';
+import { Switch } from '@/components/ui/switch';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { Progress } from '@/components/ui/progress';
+import { useToast } from '@/hooks/use-toast';
 import {
   UploadCloud,
   ListChecks,
@@ -43,10 +44,10 @@ import {
   FileType,
   History,
   AlertTriangle,
-} from "lucide-react";
-import type { TestSettings, Question, CachedDocument } from "@/lib/types";
-import { cn } from "@/lib/utils";
-import { getRecentDocuments, addRecentDocument } from "@/lib/storage";
+} from 'lucide-react';
+import type { TestSettings, Question, CachedDocument } from '@/lib/types';
+import { cn } from '@/lib/utils';
+import { getRecentDocuments, addRecentDocument } from '@/lib/storage';
 
 type UploadViewProps = {
   onDocumentUploaded: (
@@ -61,9 +62,9 @@ type UploadViewProps = {
 };
 
 const parsingSteps = [
-  "Analyzing document...",
-  "Extracting text...",
-  "Almost ready...",
+  'Analyzing document...',
+  'Extracting text...',
+  'Almost ready...',
 ];
 
 const INITIAL_BATCH_SIZE = 5;
@@ -71,6 +72,27 @@ const MIN_QUESTIONS = 5;
 const MAX_QUESTIONS = 50;
 const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
 const WARNING_THRESHOLD = 20;
+const INITIAL_GENERATION_TIMEOUT = 60000;
+const INITIAL_GENERATION_MAX_RETRIES = 1;
+
+const normalizeQuestionText = (value: string) =>
+  value
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+const uniqueQuestions = (questions: Question[]) => {
+  const seen = new Set<string>();
+  return questions.filter((question) => {
+    const normalized = normalizeQuestionText(question.question);
+    if (!normalized || seen.has(normalized)) {
+      return false;
+    }
+    seen.add(normalized);
+    return true;
+  });
+};
 
 function RecentDocuments({
   onSelect,
@@ -88,12 +110,12 @@ function RecentDocuments({
   }
 
   const formatBytes = (bytes: number, decimals = 2) => {
-    if (bytes === 0) return "0 Bytes";
+    if (bytes === 0) return '0 Bytes';
     const k = 1024;
     const dm = decimals < 0 ? 0 : decimals;
-    const sizes = ["Bytes", "KB", "MB", "GB", "TB"];
+    const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
     const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + " " + sizes[i];
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
   };
 
   return (
@@ -145,19 +167,20 @@ export function UploadView({
   );
 
   const [settings, setSettings] = useState<TestSettings>({
-    questionType: "multiple choice",
+    questionType: 'multiple choice',
     numberOfQuestions: 10,
     timerEnabled: false,
     timerDuration: 10,
-    difficulty: "medium",
-    questionSource: "strict",
+    difficulty: 'medium',
+    questionSource: 'strict',
   });
 
   const [isLoading, setIsLoading] = useState(false);
-  const [loadingMessage, setLoadingMessage] = useState("");
+  const [loadingMessage, setLoadingMessage] = useState('');
   const [isParsing, setIsParsing] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const [generationProgress, setGenerationProgress] = useState(0);
+  const [manualText, setManualText] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const isTestCreationMode = !!existingDocument;
@@ -179,12 +202,12 @@ export function UploadView({
 
     const handleBeforeUnload = (e: BeforeUnloadEvent) => {
       e.preventDefault();
-      e.returnValue = "Questions are being generated. Leave anyway?";
+      e.returnValue = 'Questions are being generated. Leave anyway?';
       return e.returnValue;
     };
 
-    window.addEventListener("beforeunload", handleBeforeUnload);
-    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
   }, [isLoading, isTestCreationMode]);
 
   useEffect(() => {
@@ -207,10 +230,10 @@ export function UploadView({
     if (selectedFile.size > MAX_FILE_SIZE) {
       handleError(
         `File size exceeds the 50MB limit. Please upload a smaller document.`,
-        "File Too Large",
+        'File Too Large',
       );
       if (fileInputRef.current) {
-        fileInputRef.current.value = "";
+        fileInputRef.current.value = '';
       }
       return;
     }
@@ -231,8 +254,8 @@ export function UploadView({
         },
       );
 
-      let text = "";
-      if (selectedFile.type === "application/pdf") {
+      let text = '';
+      if (selectedFile.type === 'application/pdf') {
         pdfjs.GlobalWorkerOptions.workerSrc = `//unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
         const pdf = await pdfjs.getDocument({ data: arrayBufferResult })
           .promise;
@@ -241,12 +264,12 @@ export function UploadView({
           const content = await page.getTextContent();
           text +=
             content.items
-              .map((item) => ("str" in item ? item.str : ""))
-              .join(" ") + "\n";
+              .map((item) => ('str' in item ? item.str : ''))
+              .join(' ') + '\n';
         }
       } else if (
         selectedFile.type ===
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
       ) {
         const result = await mammoth.extractRawText({
           arrayBuffer: arrayBufferResult,
@@ -254,24 +277,24 @@ export function UploadView({
         text = result.value;
       } else if (
         selectedFile.type ===
-        "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+        'application/vnd.openxmlformats-officedocument.presentationml.presentation'
       ) {
         const zip = await JSZip.loadAsync(arrayBufferResult);
         const slideTexts: string[] = [];
         const slidePromises: Promise<void>[] = [];
 
-        zip.folder("ppt/slides")?.forEach((relativePath, file) => {
-          if (relativePath.endsWith(".xml")) {
-            const promise = file.async("string").then((xmlContent) => {
+        zip.folder('ppt/slides')?.forEach((relativePath, file) => {
+          if (relativePath.endsWith('.xml')) {
+            const promise = file.async('string').then((xmlContent) => {
               const parser = new DOMParser();
               const xmlDoc = parser.parseFromString(
                 xmlContent,
-                "application/xml",
+                'application/xml',
               );
-              const textNodes = xmlDoc.getElementsByTagName("a:t");
-              let slideText = "";
+              const textNodes = xmlDoc.getElementsByTagName('a:t');
+              let slideText = '';
               for (let i = 0; i < textNodes.length; i++) {
-                slideText += textNodes[i].textContent + " ";
+                slideText += textNodes[i].textContent + ' ';
               }
               const slideNumMatch = relativePath.match(/slide(\d+)\.xml/);
               const slideNum = slideNumMatch
@@ -288,23 +311,23 @@ export function UploadView({
         text = (slideTexts as any[])
           .sort((a, b) => a.num - b.num)
           .map((s) => s.text)
-          .join("\n\n");
+          .join('\n\n');
       } else if (
-        selectedFile.type === "text/plain" ||
-        selectedFile.type.startsWith("text/")
+        selectedFile.type === 'text/plain' ||
+        selectedFile.type.startsWith('text/')
       ) {
         text = new TextDecoder().decode(arrayBufferResult);
       } else {
         handleError(
-          "Unsupported file type. Please use PDF, DOCX, PPTX, or a plain text file.",
+          'Unsupported file type. Please use PDF, DOCX, PPTX, or a plain text file.',
         );
         return;
       }
 
       if (!text.trim()) {
         handleError(
-          "Could not extract any text from the document. It might be empty or scanned as an image.",
-          "No Text Found",
+          'Could not extract any text from the document. It might be empty or scanned as an image.',
+          'No Text Found',
         );
         return;
       }
@@ -323,8 +346,8 @@ export function UploadView({
 
       onDocumentUploaded(text, fileInfo);
     } catch (error) {
-      console.error("Parsing error:", error);
-      handleError("Failed to parse the document.");
+      console.error('Parsing error:', error);
+      handleError('Failed to parse the document.');
     } finally {
       setIsParsing(false);
     }
@@ -338,15 +361,47 @@ export function UploadView({
     });
   };
 
-  const handleError = (message: string, title: string = "Error") => {
-    toast({ variant: "destructive", title: title, description: message });
+  const handleUseManualText = () => {
+    const trimmedText = manualText.trim();
+
+    if (!trimmedText) {
+      toast({
+        variant: 'destructive',
+        title: 'No Text Provided',
+        description: 'Please paste or type some text to continue.',
+      });
+      return;
+    }
+
+    const now = Date.now();
+    const pastedDocumentName = `Pasted Text ${new Date(now).toLocaleString()}`;
+    const pastedDocumentSize = new Blob([trimmedText]).size;
+
+    addRecentDocument({
+      id: `pasted-text-${now}`,
+      name: pastedDocumentName,
+      type: 'text/plain',
+      size: pastedDocumentSize,
+      lastModified: now,
+      text: trimmedText,
+    });
+
+    onDocumentUploaded(trimmedText, {
+      name: pastedDocumentName,
+      type: 'text/plain',
+      size: pastedDocumentSize,
+    });
+  };
+
+  const handleError = (message: string, title: string = 'Error') => {
+    toast({ variant: 'destructive', title: title, description: message });
     setIsLoading(false);
     setIsParsing(false);
     setGenerationProgress(0);
-    if (title !== "AI Service Unavailable" && !isTestCreationMode) {
+    if (title !== 'AI Service Unavailable' && !isTestCreationMode) {
       setFile(null);
       if (fileInputRef.current) {
-        fileInputRef.current.value = "";
+        fileInputRef.current.value = '';
       }
     }
   };
@@ -354,9 +409,9 @@ export function UploadView({
   const handleGenerateTest = async () => {
     if (!existingDocument) {
       toast({
-        variant: "destructive",
-        title: "No document context",
-        description: "Something went wrong. Please upload the document again.",
+        variant: 'destructive',
+        title: 'No document context',
+        description: 'Something went wrong. Please upload the document again.',
       });
       return;
     }
@@ -367,10 +422,10 @@ export function UploadView({
       settings.numberOfQuestions > MAX_QUESTIONS
     ) {
       toast({
-        variant: "destructive",
-        title: "Invalid Question Count",
+        variant: 'destructive',
+        title: 'Invalid Question Count',
         description:
-          questionCountError || "Please enter a valid number of questions.",
+          questionCountError || 'Please enter a valid number of questions.',
       });
       return;
     }
@@ -381,50 +436,95 @@ export function UploadView({
     setLoadingMessage(`Generating initial ${INITIAL_BATCH_SIZE} questions...`);
 
     try {
-      // Use BATCH generation for initial 5 questions
-      const result = await generateBatchTestQuestions({
-        documentContent: existingDocument.text,
-        questionType: settings.questionType,
-        difficulty: settings.difficulty,
-        questionSource: settings.questionSource,
-        existingQuestions: [],
-        batchSize: INITIAL_BATCH_SIZE,
-      });
+      let attempt = 0;
+      let result: { questions: Question[] } | null = null;
+
+      while (attempt <= INITIAL_GENERATION_MAX_RETRIES && !result) {
+        try {
+          const timeoutPromise = new Promise<never>((_, reject) =>
+            setTimeout(
+              () => reject(new Error('Initial generation timeout')),
+              INITIAL_GENERATION_TIMEOUT,
+            ),
+          );
+
+          const generationPromise = generateBatchTestQuestions({
+            documentContent: existingDocument.text,
+            questionType: settings.questionType,
+            difficulty: settings.difficulty,
+            questionSource: settings.questionSource,
+            existingQuestions: [],
+            batchSize: INITIAL_BATCH_SIZE,
+          });
+
+          result = (await Promise.race([
+            generationPromise,
+            timeoutPromise,
+          ])) as { questions: Question[] };
+        } catch (error) {
+          const errorMessage = ((error as Error)?.message || '').toLowerCase();
+          const isRetryable =
+            errorMessage.includes('timeout') ||
+            errorMessage.includes('fetch') ||
+            errorMessage.includes('network') ||
+            errorMessage.includes('503') ||
+            errorMessage.includes('server') ||
+            errorMessage.includes('overloaded');
+
+          if (!isRetryable || attempt >= INITIAL_GENERATION_MAX_RETRIES) {
+            throw error;
+          }
+
+          attempt++;
+          toast({
+            variant: 'destructive',
+            title: 'Generation Failed',
+            description: `Retrying question generation... (${attempt}/${INITIAL_GENERATION_MAX_RETRIES})`,
+          });
+          await new Promise((resolve) => setTimeout(resolve, 2000));
+        }
+      }
+
+      if (!result) {
+        throw new Error('Initial question generation failed after retries.');
+      }
+
+      const dedupedQuestions = uniqueQuestions(result.questions as Question[]);
 
       setGenerationProgress(100);
 
       // Check if we generated minimum required questions
-      if (result.questions.length < MIN_QUESTIONS) {
+      if (dedupedQuestions.length < MIN_QUESTIONS) {
         handleError(
-          `Unable to generate minimum ${MIN_QUESTIONS} questions. Please try again or reduce document size.`,
-          "Insufficient Questions Generated",
+          `Unable to generate minimum ${MIN_QUESTIONS} unique questions. Please try again or reduce document size.`,
+          'Insufficient Questions Generated',
         );
         return;
       }
 
       // Success! Move to test view
-      onTestGenerated(result.questions as Question[], settings);
+      onTestGenerated(dedupedQuestions, settings);
     } catch (error) {
       console.error(error);
       const errorMessage =
-        (error as Error)?.message || "An unknown error occurred.";
-      const isRateLimitError = errorMessage.includes("429");
+        (error as Error)?.message || 'An unknown error occurred.';
+      const isRateLimitError = errorMessage.includes('429');
       const isServiceUnavailable =
-        errorMessage.includes("503") ||
-        errorMessage.toLowerCase().includes("overloaded");
+        errorMessage.includes('503') ||
+        errorMessage.toLowerCase().includes('overloaded');
 
       if (isRateLimitError) {
         handleError(
           "You've exceeded the free tier quota for the AI. Please wait a moment and try again, or upgrade your plan.",
-          "AI Rate Limit Reached",
+          'AI Rate Limit Reached',
         );
       } else if (isServiceUnavailable) {
         handleError(
-          "The AI model is temporarily overloaded. Please wait a moment and try generating the test again.",
-          "AI Service Unavailable",
+          'The AI model is temporarily overloaded. Please wait a moment and try generating the test again.',
+          'AI Service Unavailable',
         );
       } else {
-        handleError("An unexpected error occurred while generating the test.");
+        handleError('An unexpected error occurred while generating the test.');
       }
     } finally {
       setIsLoading(false);
@@ -462,7 +562,7 @@ export function UploadView({
   const getButtonText = () => {
     if (isLoading) return loadingMessage;
     if (isParsing) return loadingMessage;
-    return "Generate Test";
+    return 'Generate Test';
   };
 
   if (isTestCreationMode) {
@@ -474,7 +574,7 @@ export function UploadView({
               Create Your Test
             </CardTitle>
             <CardDescription className="text-center">
-              Adjust the settings for the test based on your document:{" "}
+              Adjust the settings for the test based on your document:{' '}
               <span className="font-semibold text-primary">
                 {existingDocument.file.name}
               </span>
@@ -490,7 +590,7 @@ export function UploadView({
                   onValueChange={(value) =>
                     setSettings({
                       ...settings,
-                      questionType: value as TestSettings["questionType"],
+                      questionType: value as TestSettings['questionType'],
                     })
                   }
                   disabled={isLoading}
@@ -547,9 +647,9 @@ export function UploadView({
                   min={MIN_QUESTIONS}
                   max={MAX_QUESTIONS}
                   className={cn(
-                    "w-full",
+                    'w-full',
                     questionCountError &&
-                      "border-destructive focus-visible:ring-destructive",
+                      'border-destructive focus-visible:ring-destructive',
                   )}
                   disabled={isLoading}
                 />
@@ -588,7 +688,7 @@ export function UploadView({
                   onValueChange={(value) =>
                     setSettings({
                       ...settings,
-                      difficulty: value as TestSettings["difficulty"],
+                      difficulty: value as TestSettings['difficulty'],
                     })
                   }
                   disabled={isLoading}
@@ -622,7 +722,7 @@ export function UploadView({
                   onValueChange={(value) =>
                     setSettings({
                       ...settings,
-                      questionSource: value as TestSettings["questionSource"],
+                      questionSource: value as TestSettings['questionSource'],
                     })
                   }
                   disabled={isLoading}
@@ -728,10 +828,10 @@ export function UploadView({
           <RecentDocuments onSelect={handleSelectRecent} />
           <div
             className={cn(
-              "border-2 border-dashed rounded-lg p-8 text-center cursor-pointer transition-colors",
+              'border-2 border-dashed rounded-lg p-8 text-center cursor-pointer transition-colors',
               isDragging
-                ? "border-primary bg-primary/10"
-                : "border-border hover:border-primary/50",
+                ? 'border-primary bg-primary/10'
+                : 'border-border hover:border-primary/50',
             )}
             onClick={() => fileInputRef.current?.click()}
             onDrop={handleDrop}
@@ -769,6 +869,37 @@ export function UploadView({
                 </>
               )}
             </div>
+          </div>
+
+          <div className="relative my-6">
+            <div className="absolute inset-0 flex items-center">
+              <span className="w-full border-t" />
+            </div>
+            <div className="relative flex justify-center text-xs uppercase">
+              <span className="bg-background px-2 text-muted-foreground">
+                Or paste text
+              </span>
+            </div>
+          </div>
+
+          <div className="space-y-3">
+            <Label htmlFor="manual-text-input">Paste your study text</Label>
+            <Textarea
+              id="manual-text-input"
+              placeholder="Paste or type your study material here..."
+              rows={8}
+              value={manualText}
+              onChange={(e) => setManualText(e.target.value)}
+              disabled={isParsing}
+            />
+            <Button
+              type="button"
+              onClick={handleUseManualText}
+              disabled={isParsing || !manualText.trim()}
+              className="w-full"
+            >
+              Use This Text
+            </Button>
           </div>
         </CardContent>
       </Card>

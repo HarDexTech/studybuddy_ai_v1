@@ -4,6 +4,8 @@
 
 @layer base {
   :root {
+    --font-inter: Inter;
+    --font-lexend: Lexend;
     --background: 43 14% 95%;
     --foreground: 270 5% 16%;
     --card: 0 0% 100%;
