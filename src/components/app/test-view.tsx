@@ -96,6 +96,75 @@ const normalizeQuestionText = (value: string) =>
     .replace(/\s+/g, ' ')
     .trim();
 
+const normalizeText = (value: string) =>
+  value
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+const isTransientAiError = (message: string) => {
+  const text = message.toLowerCase();
+  return (
+    text.includes('timeout') ||
+    text.includes('fetch') ||
+    text.includes('network') ||
+    text.includes('503') ||
+    text.includes('server') ||
+    text.includes('econnreset') ||
+    text.includes('etimedout') ||
+    text.includes('enotfound') ||
+    text.includes('overloaded')
+  );
+};
+
+const getOfflineValidationResult = (
+  question: Question,
+  userAnswer: string,
+): ValidateUserAnswerOutput => {
+  const normalizedQuestion = normalizeText(question.question);
+  const normalizedAnswer = normalizeText(userAnswer);
+
+  if (!normalizedAnswer) {
+    return {
+      isCorrect: false,
+      feedback:
+        'No answer provided. Offline validation is active because the AI service is currently unreachable.',
+    };
+  }
+
+  const answerWords = new Set(normalizedAnswer.split(' ').filter(Boolean));
+  const questionWords = new Set(normalizedQuestion.split(' ').filter(Boolean));
+  const overlapCount = Array.from(answerWords).filter((word) =>
+    questionWords.has(word),
+  ).length;
+  const overlapRatio = answerWords.size ? overlapCount / answerWords.size : 0;
+
+  if ('correctAnswer' in question && question.correctAnswer) {
+    const normalizedCorrect = normalizeText(String(question.correctAnswer));
+    const hasCorrect =
+      normalizedCorrect.length > 0 &&
+      normalizedAnswer.includes(normalizedCorrect);
+
+    if (hasCorrect) {
+      return {
+        isCorrect: true,
+        feedback:
+          'Likely correct based on offline validation (AI service unavailable).',
+      };
+    }
+  }
+
+  const likelyCorrect = normalizedAnswer.length >= 15 && overlapRatio >= 0.25;
+
+  return {
+    isCorrect: likelyCorrect,
+    feedback: likelyCorrect
+      ? 'Your answer appears reasonable based on offline checks while AI is unavailable.'
+      : 'Offline validation could not confidently confirm this answer while AI is unavailable. You can revise and resubmit.',
+  };
+};
+
 const appendUniqueQuestions = (
   existingQuestions: Question[],
   incomingQuestions: Question[],
@@ -711,59 +780,61 @@ export function TestView({
           : `Incorrect. The correct answer is ${String((currentQuestion as TrueFalseQuestion).correctAnswer)}.`;
         validationResult = { isCorrect, feedback };
       } else {
-        let attempt = 0;
-        let lastError: unknown = null;
+        if (networkLost) {
+          validationResult = getOfflineValidationResult(
+            currentQuestion,
+            userAnswer,
+          );
+        } else {
+          let attempt = 0;
+          let lastError: unknown = null;
 
-        while (attempt <= MAX_RETRIES) {
-          try {
-            const timeoutPromise = new Promise<never>((_, reject) =>
-              setTimeout(
-                () => reject(new Error('Validation timeout')),
-                VALIDATION_TIMEOUT,
-              ),
-            );
+          while (attempt <= MAX_RETRIES) {
+            try {
+              const timeoutPromise = new Promise<never>((_, reject) =>
+                setTimeout(
+                  () => reject(new Error('Validation timeout')),
+                  VALIDATION_TIMEOUT,
+                ),
+              );
 
-            validationResult = await Promise.race([
-              validateUserAnswer({
-                documentContent: documentInfo.text,
-                question: currentQuestion.question,
-                userAnswer: userAnswer,
-                correctAnswer:
-                  'correctAnswer' in currentQuestion
-                    ? String(currentQuestion.correctAnswer)
-                    : '',
-              }),
-              timeoutPromise,
-            ]);
+              validationResult = await Promise.race([
+                validateUserAnswer({
+                  documentContent: documentInfo.text,
+                  question: currentQuestion.question,
+                  userAnswer: userAnswer,
+                  correctAnswer:
+                    'correctAnswer' in currentQuestion
+                      ? String(currentQuestion.correctAnswer)
+                      : '',
+                }),
+                timeoutPromise,
+              ]);
 
-            lastError = null;
-            break;
-          } catch (error) {
-            lastError = error;
-            const errorMessage = (error as Error)?.message?.toLowerCase() || '';
-            const isRetryableError =
-              errorMessage.includes('timeout') ||
-              errorMessage.includes('fetch') ||
-              errorMessage.includes('network') ||
-              errorMessage.includes('503') ||
-              errorMessage.includes('server');
+              lastError = null;
+              break;
+            } catch (error) {
+              lastError = error;
+              const errorMessage = (error as Error)?.message || '';
+              const isRetryableError = isTransientAiError(errorMessage);
 
-            if (!isRetryableError || attempt >= MAX_RETRIES) {
-              throw error;
+              if (!isRetryableError || attempt >= MAX_RETRIES) {
+                throw error;
+              }
+
+              attempt++;
+              toast({
+                variant: 'destructive',
+                title: 'Validation Failed',
+                description: `Retrying validation... (${attempt}/${MAX_RETRIES})`,
+              });
+              await new Promise((resolve) => setTimeout(resolve, 1500));
             }
-
-            attempt++;
-            toast({
-              variant: 'destructive',
-              title: 'Validation Failed',
-              description: `Retrying validation... (${attempt}/${MAX_RETRIES})`,
-            });
-            await new Promise((resolve) => setTimeout(resolve, 1500));
           }
-        }
 
-        if (lastError) {
-          throw lastError;
+          if (lastError) {
+            throw lastError;
+          }
         }
       }
 
@@ -784,23 +855,45 @@ export function TestView({
       console.error(error);
       const errorMessage =
         (error as Error)?.message || 'An unknown error occurred.';
-      const isServiceUnavailable =
-        errorMessage.includes('503') ||
-        errorMessage.toLowerCase().includes('overloaded');
-      const isTimeout = errorMessage.toLowerCase().includes('timeout');
-      const isFetchError =
-        errorMessage.toLowerCase().includes('fetch') ||
-        errorMessage.toLowerCase().includes('network');
+      const isTransientError = isTransientAiError(errorMessage);
+
+      if (
+        isTransientError &&
+        (currentQuestion.type === 'fill-in-the-blank' ||
+          currentQuestion.type === 'theory')
+      ) {
+        setNetworkLost(true);
+        const fallbackResult = getOfflineValidationResult(
+          currentQuestion,
+          userAnswer,
+        );
+
+        toast({
+          variant: 'destructive',
+          title: 'AI Unavailable - Using Offline Validation',
+          description:
+            'Switched to offline answer checking due to network/service issues.',
+        });
+
+        setCurrentResult(fallbackResult);
+        setResults((prev) =>
+          upsertResult(prev, {
+            question: currentQuestion,
+            userAnswer: userAnswer,
+            ...fallbackResult,
+          }),
+        );
+        setIsAnswered(true);
+        setValidationSubmitError(null);
+        return;
+      }
 
       toast({
         variant: 'destructive',
-        title: isServiceUnavailable
-          ? 'AI Service Unavailable'
-          : 'Validation Error',
-        description:
-          isServiceUnavailable || isTimeout || isFetchError
-            ? 'Validation failed after retry. Please submit again.'
-            : 'An error occurred while validating your answer. Please submit again.',
+        title: 'Validation Error',
+        description: isTransientError
+          ? 'Validation failed after retry. Please submit again.'
+          : 'An error occurred while validating your answer. Please submit again.',
       });
 
       setValidationSubmitError(

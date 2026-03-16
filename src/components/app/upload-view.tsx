@@ -74,6 +74,12 @@ const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
 const WARNING_THRESHOLD = 20;
 const INITIAL_GENERATION_TIMEOUT = 60000;
 const INITIAL_GENERATION_MAX_RETRIES = 1;
+const OCR_TEXT_MIN_LENGTH = 200;
+const OCR_TEXT_PER_PAGE_MIN = 40;
+const OCR_PAGE_RENDER_SCALE = 3;
+
+const FALLBACK_WORD_MIN_LENGTH = 5;
+const FALLBACK_SENTENCE_MIN_LENGTH = 30;
 
 const normalizeQuestionText = (value: string) =>
   value
@@ -92,6 +98,143 @@ const uniqueQuestions = (questions: Question[]) => {
     seen.add(normalized);
     return true;
   });
+};
+
+const shuffleArray = <T,>(array: T[]) => {
+  const copy = [...array];
+  for (let i = copy.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [copy[i], copy[j]] = [copy[j], copy[i]];
+  }
+  return copy;
+};
+
+const splitIntoSentences = (text: string) =>
+  text
+    .replace(/\s+/g, ' ')
+    .split(/(?<=[.!?])\s+/)
+    .map((sentence) => sentence.trim())
+    .filter((sentence) => sentence.length >= FALLBACK_SENTENCE_MIN_LENGTH);
+
+const extractWordPool = (text: string) => {
+  const words = text.toLowerCase().match(/[a-zA-Z][a-zA-Z-]{4,}/g);
+
+  if (!words) return [];
+  return Array.from(
+    new Set(words.filter((word) => word.length >= FALLBACK_WORD_MIN_LENGTH)),
+  );
+};
+
+const pickBlankWord = (sentence: string) => {
+  const candidates = sentence.match(/[a-zA-Z][a-zA-Z-]{4,}/g) || [];
+  if (candidates.length === 0) return null;
+  return candidates[Math.floor(Math.random() * candidates.length)];
+};
+
+const makeMultipleChoiceQuestion = (
+  sentence: string,
+  wordPool: string[],
+): Question => {
+  const correctAnswer = pickBlankWord(sentence) || 'information';
+  const prompt = sentence.replace(
+    new RegExp(`\\b${correctAnswer}\\b`, 'i'),
+    '_____',
+  );
+
+  const distractors = shuffleArray(
+    wordPool.filter(
+      (word) => word.toLowerCase() !== correctAnswer.toLowerCase(),
+    ),
+  ).slice(0, 3);
+
+  while (distractors.length < 3) {
+    distractors.push(`option-${distractors.length + 1}`);
+  }
+
+  const choices = shuffleArray([correctAnswer, ...distractors]);
+
+  return {
+    type: 'multiple choice',
+    question: `Choose the best word to complete the statement: ${prompt}`,
+    choices,
+    correctAnswer,
+  };
+};
+
+const makeTrueFalseQuestion = (sentence: string): Question => {
+  const isTrue = Math.random() > 0.5;
+  if (isTrue) {
+    return {
+      type: 'true or false',
+      question: `True or False: ${sentence}`,
+      correctAnswer: true,
+    };
+  }
+
+  const words = sentence.split(' ');
+  if (words.length > 6) {
+    words[words.length - 2] = 'not';
+  }
+
+  return {
+    type: 'true or false',
+    question: `True or False: ${words.join(' ')}`,
+    correctAnswer: false,
+  };
+};
+
+const makeFillBlankQuestion = (sentence: string): Question => {
+  const blankWord = pickBlankWord(sentence) || 'keyword';
+  return {
+    type: 'fill-in-the-blank',
+    question: sentence.replace(new RegExp(`\\b${blankWord}\\b`, 'i'), '_____'),
+  };
+};
+
+const makeTheoryQuestion = (sentence: string): Question => ({
+  type: 'theory',
+  question: `Explain this concept from the document in your own words: ${sentence}`,
+});
+
+const generateOfflineFallbackQuestions = (
+  text: string,
+  settings: TestSettings,
+  count: number,
+): Question[] => {
+  const sentences = splitIntoSentences(text);
+  const wordPool = extractWordPool(text);
+
+  const fallbackSource =
+    sentences.length > 0
+      ? sentences
+      : [
+          'Summarize the key ideas from this uploaded material.',
+          'Identify a major concept discussed in this document.',
+          'Explain one important fact from the document.',
+        ];
+
+  const questions: Question[] = [];
+  const orderedTypes: Array<Question['type']> =
+    settings.questionType === 'all'
+      ? ['multiple choice', 'true or false', 'fill-in-the-blank', 'theory']
+      : [settings.questionType as Question['type']];
+
+  for (let index = 0; index < count; index++) {
+    const sentence = fallbackSource[index % fallbackSource.length];
+    const targetType = orderedTypes[index % orderedTypes.length];
+
+    if (targetType === 'multiple choice') {
+      questions.push(makeMultipleChoiceQuestion(sentence, wordPool));
+    } else if (targetType === 'true or false') {
+      questions.push(makeTrueFalseQuestion(sentence));
+    } else if (targetType === 'fill-in-the-blank') {
+      questions.push(makeFillBlankQuestion(sentence));
+    } else {
+      questions.push(makeTheoryQuestion(sentence));
+    }
+  }
+
+  return uniqueQuestions(questions);
 };
 
 function RecentDocuments({
@@ -179,6 +322,7 @@ export function UploadView({
   const [loadingMessage, setLoadingMessage] = useState('');
   const [isParsing, setIsParsing] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
+  const [parsingProgress, setParsingProgress] = useState<number | null>(null);
   const [generationProgress, setGenerationProgress] = useState(0);
   const [manualText, setManualText] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -215,6 +359,10 @@ export function UploadView({
     if (isParsing) {
       interval = setInterval(() => {
         setLoadingMessage((prev) => {
+          if (!parsingSteps.includes(prev)) {
+            return prev;
+          }
+
           const currentIndex = parsingSteps.indexOf(prev);
           const nextIndex = (currentIndex + 1) % parsingSteps.length;
           return parsingSteps[nextIndex];
@@ -223,6 +371,128 @@ export function UploadView({
     }
     return () => clearInterval(interval);
   }, [isParsing]);
+
+  const isLikelyScannedPdf = (text: string, pageCount: number) => {
+    const normalizedLength = text.replace(/\s+/g, ' ').trim().length;
+    const perPageLength = normalizedLength / Math.max(pageCount, 1);
+
+    return (
+      normalizedLength < OCR_TEXT_MIN_LENGTH ||
+      perPageLength < OCR_TEXT_PER_PAGE_MIN
+    );
+  };
+
+  const extractNativePdfText = async (pdf: pdfjs.PDFDocumentProxy) => {
+    let text = '';
+
+    for (let i = 1; i <= pdf.numPages; i++) {
+      const progress = Math.round((i / Math.max(pdf.numPages, 1)) * 100);
+      setParsingProgress(progress);
+      setLoadingMessage(
+        `Extracting text from page ${i}/${pdf.numPages} (${progress}%)...`,
+      );
+      const page = await pdf.getPage(i);
+      const content = await page.getTextContent();
+      text +=
+        content.items.map((item) => ('str' in item ? item.str : '')).join(' ') +
+        '\n';
+    }
+
+    return text;
+  };
+
+  const runPdfOcr = async (pdf: pdfjs.PDFDocumentProxy) => {
+    const { createWorker } = await import('tesseract.js');
+    const worker = await createWorker('eng');
+    let ocrText = '';
+
+    try {
+      for (let i = 1; i <= pdf.numPages; i++) {
+        const progress = Math.round((i / Math.max(pdf.numPages, 1)) * 100);
+        setParsingProgress(progress);
+        setLoadingMessage(
+          `Running OCR on page ${i}/${pdf.numPages} (${progress}%)...`,
+        );
+        const page = await pdf.getPage(i);
+        const viewport = page.getViewport({ scale: OCR_PAGE_RENDER_SCALE });
+        const canvas = document.createElement('canvas');
+        const context = canvas.getContext('2d');
+
+        if (!context) {
+          throw new Error('Failed to initialize canvas for OCR.');
+        }
+
+        canvas.width = Math.ceil(viewport.width);
+        canvas.height = Math.ceil(viewport.height);
+
+        await page.render({ canvasContext: context, viewport }).promise;
+
+        const {
+          data: { text },
+        } = await worker.recognize(canvas);
+        ocrText += `${text || ''}\n`;
+      }
+    } finally {
+      await worker.terminate();
+    }
+
+    return ocrText;
+  };
+
+  useEffect(() => {
+    if (isTestCreationMode) return;
+
+    const handlePaste = async (event: ClipboardEvent) => {
+      const activeElement = document.activeElement;
+      const isTypingTarget =
+        activeElement instanceof HTMLInputElement ||
+        activeElement instanceof HTMLTextAreaElement ||
+        activeElement instanceof HTMLSelectElement ||
+        activeElement?.getAttribute('contenteditable') === 'true';
+
+      if (isTypingTarget) return;
+
+      const items = event.clipboardData?.items;
+      if (!items || items.length === 0) return;
+
+      const clipboardItems = Array.from(items);
+      const pdfItem = clipboardItems.find(
+        (item) => item.kind === 'file' && item.type === 'application/pdf',
+      );
+
+      if (!pdfItem) {
+        const hasOtherFile = clipboardItems.some(
+          (item) => item.kind === 'file',
+        );
+        if (hasOtherFile) {
+          toast({
+            variant: 'destructive',
+            title: 'Paste Supports PDF Only',
+            description:
+              'Please paste a PDF document or upload another file type.',
+          });
+        }
+        return;
+      }
+
+      const pastedFile = pdfItem.getAsFile();
+      if (!pastedFile) return;
+
+      event.preventDefault();
+
+      const normalizedFile = new File(
+        [pastedFile],
+        pastedFile.name || `pasted-scan-${Date.now()}.pdf`,
+        { type: 'application/pdf' },
+      );
+
+      await handleFileChange(normalizedFile);
+    };
+
+    window.addEventListener('paste', handlePaste);
+    return () => window.removeEventListener('paste', handlePaste);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isTestCreationMode, toast]);
 
   const handleFileChange = async (selectedFile: File | null) => {
     if (!selectedFile) return;
@@ -240,6 +510,7 @@ export function UploadView({
 
     setFile(selectedFile);
     setIsParsing(true);
+    setParsingProgress(0);
     setLoadingMessage(parsingSteps[0]);
 
     const arrayBufferReader = new FileReader();
@@ -259,13 +530,17 @@ export function UploadView({
         pdfjs.GlobalWorkerOptions.workerSrc = `//unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
         const pdf = await pdfjs.getDocument({ data: arrayBufferResult })
           .promise;
-        for (let i = 1; i <= pdf.numPages; i++) {
-          const page = await pdf.getPage(i);
-          const content = await page.getTextContent();
-          text +=
-            content.items
-              .map((item) => ('str' in item ? item.str : ''))
-              .join(' ') + '\n';
+
+        setParsingProgress(0);
+        setLoadingMessage('Detecting if PDF is scanned or selectable text...');
+        const nativeText = await extractNativePdfText(pdf);
+
+        if (isLikelyScannedPdf(nativeText, pdf.numPages)) {
+          setLoadingMessage('Scanned PDF detected. Starting OCR...');
+          const ocrText = await runPdfOcr(pdf);
+          text = ocrText.trim() || nativeText;
+        } else {
+          text = nativeText;
         }
       } else if (
         selectedFile.type ===
@@ -350,6 +625,7 @@ export function UploadView({
       handleError('Failed to parse the document.');
     } finally {
       setIsParsing(false);
+      setParsingProgress(null);
     }
   };
 
@@ -397,6 +673,7 @@ export function UploadView({
     toast({ variant: 'destructive', title: title, description: message });
     setIsLoading(false);
     setIsParsing(false);
+    setParsingProgress(null);
     setGenerationProgress(0);
     if (title !== 'AI Service Unavailable' && !isTestCreationMode) {
       setFile(null);
@@ -508,10 +785,37 @@ export function UploadView({
       console.error(error);
       const errorMessage =
         (error as Error)?.message || 'An unknown error occurred.';
+      const errorText = errorMessage.toLowerCase();
       const isRateLimitError = errorMessage.includes('429');
       const isServiceUnavailable =
         errorMessage.includes('503') ||
         errorMessage.toLowerCase().includes('overloaded');
+      const isNetworkFailure =
+        errorText.includes('failed to fetch') ||
+        errorText.includes('fetch') ||
+        errorText.includes('network') ||
+        errorText.includes('econnreset') ||
+        errorText.includes('etimedout') ||
+        errorText.includes('enotfound');
+
+      if (isServiceUnavailable || isNetworkFailure) {
+        const fallbackQuestions = generateOfflineFallbackQuestions(
+          existingDocument.text,
+          settings,
+          INITIAL_BATCH_SIZE,
+        );
+
+        if (fallbackQuestions.length >= MIN_QUESTIONS) {
+          toast({
+            variant: 'destructive',
+            title: 'AI Unavailable - Using Offline Questions',
+            description:
+              'Started test with fallback questions because the AI service is currently unreachable.',
+          });
+          onTestGenerated(fallbackQuestions, settings);
+          return;
+        }
+      }
 
       if (isRateLimitError) {
         handleError(
@@ -856,6 +1160,14 @@ export function UploadView({
                   <p className="font-semibold text-foreground">
                     {loadingMessage}
                   </p>
+                  {parsingProgress !== null && (
+                    <div className="w-full max-w-xs space-y-1">
+                      <Progress value={parsingProgress} className="h-2" />
+                      <p className="text-xs text-muted-foreground">
+                        {parsingProgress}%
+                      </p>
+                    </div>
+                  )}
                 </div>
               ) : (
                 <>
@@ -863,6 +1175,7 @@ export function UploadView({
                     Drag & drop your file here
                   </p>
                   <p>or click to browse</p>
+                  <p className="text-xs">or paste a PDF from clipboard</p>
                   <p className="text-xs mt-2">
                     PDF, DOCX, PPTX, TXT supported (Max 50MB)
                   </p>
@@ -870,6 +1183,9 @@ export function UploadView({
               )}
             </div>
           </div>
+          <p className="text-xs text-muted-foreground mt-2">
+            Scanned PDFs are supported with OCR and may take longer to process.
+          </p>
 
           <div className="relative my-6">
             <div className="absolute inset-0 flex items-center">
