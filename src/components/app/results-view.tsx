@@ -202,7 +202,7 @@ export function ResultsView({
                       ) : (
                         <XCircle className="h-5 w-5 text-destructive flex-shrink-0" />
                       )}
-                      <span className="truncate flex-1 text-left">
+                      <span className="flex-1 text-left">
                         Question {index + 1}: {result.question.question}
                       </span>
                     </div>
