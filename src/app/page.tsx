@@ -20,6 +20,7 @@ export default function Home() {
   const [initialQuestions, setInitialQuestions] = useState<Question[]>([]);
   const [results, setResults] = useState<TestResult[]>([]);
   const [testSettings, setTestSettings] = useState<TestSettings | null>(null);
+  const [effectiveDocumentText, setEffectiveDocumentText] = useState('');
   const [totalGeneratedQuestions, setTotalGeneratedQuestions] =
     useState<number>(0);
 
@@ -38,9 +39,11 @@ export default function Home() {
   const handleTestGenerated = (
     generatedQuestions: Question[],
     settings: TestSettings,
+    focusedDocumentText: string,
   ) => {
     setInitialQuestions(generatedQuestions);
     setTestSettings(settings);
+    setEffectiveDocumentText(focusedDocumentText);
     setView('testing');
   };
 
@@ -59,6 +62,7 @@ export default function Home() {
     setDocumentInfo(null);
     setResults([]);
     setTestSettings(null);
+    setEffectiveDocumentText('');
     setTotalGeneratedQuestions(0);
   };
 
@@ -90,6 +94,7 @@ export default function Home() {
             <TestView
               initialQuestions={initialQuestions}
               documentInfo={documentInfo}
+              effectiveDocumentText={effectiveDocumentText || documentInfo.text}
               settings={testSettings}
               onTestFinished={handleTestFinished}
             />

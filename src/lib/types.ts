@@ -1,4 +1,9 @@
-export type QuestionType = 'multiple choice' | 'fill-in-the-blank' | 'theory' | 'true or false' | 'all';
+export type QuestionType =
+  | 'multiple choice'
+  | 'fill-in-the-blank'
+  | 'theory'
+  | 'true or false'
+  | 'all';
 
 export interface BaseQuestion {
   question: string;
@@ -24,8 +29,11 @@ export interface TheoryQuestion extends BaseQuestion {
   type: 'theory';
 }
 
-export type Question = MultipleChoiceQuestion | TrueFalseQuestion | FillInTheBlankQuestion | TheoryQuestion;
-
+export type Question =
+  | MultipleChoiceQuestion
+  | TrueFalseQuestion
+  | FillInTheBlankQuestion
+  | TheoryQuestion;
 
 export interface TestSettings {
   questionType: QuestionType;
@@ -34,6 +42,7 @@ export interface TestSettings {
   timerDuration: number; // in minutes
   difficulty: 'easy' | 'medium' | 'hard';
   questionSource: 'strict' | 'formed';
+  topicFocus?: string;
 }
 
 export interface TestResult {
