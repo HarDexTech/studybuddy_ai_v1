@@ -162,7 +162,7 @@ Existing Questions:
 ${existingQuestionsText}
 
 **RESPONSE FORMAT RULES:**
-- For **'multiple choice'**: Provide question text, an array of 4 choices, and the correct answer (string).
+- For **'multiple choice'**: Provide question text, an array of 4 choices, and the correct answer (string), ensure the correct answer is randomly placed among options A, B, C, or D. Do NOT favor any particular position (B or C). Vary the correct answer position across questions to create balanced, natural-looking question sets. Each position (A, B, C, D) should have roughly equal probability of being correct across the generated questions.
 - For **'true or false'**: Provide question statement and boolean correct answer.
 - For **'fill-in-the-blank'**: Provide question sentence with a blank "____". No correctAnswer needed.
 - For **'theory'**: Provide open-ended question. No correctAnswer needed.

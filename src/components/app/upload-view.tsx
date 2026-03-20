@@ -5,7 +5,6 @@ import * as pdfjs from 'pdfjs-dist';
 import mammoth from 'mammoth';
 import JSZip from 'jszip';
 import { generateBatchTestQuestions } from '@/ai/flows/generate-batch-test-questions';
-import { extractTopicSection } from '@/ai/flows/extract-topic-section';
 import { Button } from '@/components/ui/button';
 import {
   Card,
@@ -27,17 +26,6 @@ import {
 } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger,
-} from '@/components/ui/alert-dialog';
 import { Progress } from '@/components/ui/progress';
 import { useToast } from '@/hooks/use-toast';
 import {
@@ -56,28 +44,17 @@ import {
   FileType,
   History,
   AlertTriangle,
-  Trash2,
 } from 'lucide-react';
 import type { TestSettings, Question, CachedDocument } from '@/lib/types';
 import { cn } from '@/lib/utils';
-import { normalizeGeneratedQuestions } from '@/lib/question-normalization';
-import {
-  getRecentDocuments,
-  addRecentDocument,
-  removeRecentDocument,
-  clearRecentDocuments,
-} from '@/lib/storage';
+import { getRecentDocuments, addRecentDocument } from '@/lib/storage';
 
 type UploadViewProps = {
   onDocumentUploaded: (
     documentText: string,
     file: { name: string; type: string; size: number },
   ) => void;
-  onTestGenerated: (
-    questions: Question[],
-    settings: TestSettings,
-    effectiveDocumentText: string,
-  ) => void;
+  onTestGenerated: (questions: Question[], settings: TestSettings) => void;
   existingDocument?: {
     text: string;
     file: { name: string; type: string; size: number };
@@ -260,36 +237,12 @@ const generateOfflineFallbackQuestions = (
   return uniqueQuestions(questions);
 };
 
-const withTimeout = async <T,>(
-  operation: Promise<T>,
-  timeoutMs: number,
-  timeoutMessage: string,
-): Promise<T> => {
-  let timeoutId: ReturnType<typeof setTimeout> | undefined;
-
-  try {
-    const timeoutPromise = new Promise<never>((_, reject) => {
-      timeoutId = setTimeout(() => {
-        reject(new Error(timeoutMessage));
-      }, timeoutMs);
-    });
-
-    return await Promise.race([operation, timeoutPromise]);
-  } finally {
-    if (timeoutId) {
-      clearTimeout(timeoutId);
-    }
-  }
-};
-
 function RecentDocuments({
   onSelect,
 }: {
   onSelect: (doc: CachedDocument) => void;
 }) {
-  const VISIBLE_BY_DEFAULT = 5;
   const [recentDocs, setRecentDocs] = useState<CachedDocument[]>([]);
-  const [showAll, setShowAll] = useState(false);
 
   useEffect(() => {
     setRecentDocs(getRecentDocuments());
@@ -298,20 +251,6 @@ function RecentDocuments({
   if (recentDocs.length === 0) {
     return null;
   }
-
-  const visibleDocs = showAll
-    ? recentDocs
-    : recentDocs.slice(0, VISIBLE_BY_DEFAULT);
-
-  const handleRemoveDoc = (docId: string) => {
-    removeRecentDocument(docId);
-    setRecentDocs((prev) => prev.filter((doc) => doc.id !== docId));
-  };
-
-  const handleClearAll = () => {
-    clearRecentDocuments();
-    setRecentDocs([]);
-  };
 
   const formatBytes = (bytes: number, decimals = 2) => {
     if (bytes === 0) return '0 Bytes';
@@ -328,10 +267,10 @@ function RecentDocuments({
         <History className="w-5 h-5" /> Recent Documents
       </h3>
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        {visibleDocs.map((doc) => (
+        {recentDocs.map((doc) => (
           <Card
             key={doc.id}
-            className="hover:bg-muted/50 transition-colors cursor-pointer animate-in fade-in-50 duration-300"
+            className="hover:bg-muted/50 transition-colors cursor-pointer"
             onClick={() => onSelect(doc)}
           >
             <CardContent className="p-4 flex items-center gap-4">
@@ -342,63 +281,9 @@ function RecentDocuments({
                   {formatBytes(doc.size)}
                 </p>
               </div>
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                className="h-8 w-8"
-                aria-label={`Remove ${doc.name}`}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  handleRemoveDoc(doc.id);
-                }}
-              >
-                <Trash2 className="h-4 w-4" />
-              </Button>
             </CardContent>
           </Card>
         ))}
-      </div>
-      <div className="mt-4 flex gap-2">
-        {!showAll && recentDocs.length > VISIBLE_BY_DEFAULT && (
-          <Button
-            type="button"
-            variant="outline"
-            className="flex-1"
-            onClick={() => setShowAll(true)}
-          >
-            Show All ({recentDocs.length})
-          </Button>
-        )}
-        <AlertDialog>
-          <AlertDialogTrigger asChild>
-            <Button
-              type="button"
-              variant="outline"
-              className={
-                !showAll && recentDocs.length > VISIBLE_BY_DEFAULT
-                  ? 'flex-1'
-                  : 'w-full'
-              }
-            >
-              Clear All Recents
-            </Button>
-          </AlertDialogTrigger>
-          <AlertDialogContent>
-            <AlertDialogHeader>
-              <AlertDialogTitle>Clear all recent documents?</AlertDialogTitle>
-              <AlertDialogDescription>
-                This will remove all saved recent documents from this device.
-              </AlertDialogDescription>
-            </AlertDialogHeader>
-            <AlertDialogFooter>
-              <AlertDialogCancel>Cancel</AlertDialogCancel>
-              <AlertDialogAction onClick={handleClearAll}>
-                Clear All
-              </AlertDialogAction>
-            </AlertDialogFooter>
-          </AlertDialogContent>
-        </AlertDialog>
       </div>
       <div className="relative my-6">
         <div className="absolute inset-0 flex items-center">
@@ -431,7 +316,6 @@ export function UploadView({
     timerDuration: 10,
     difficulty: 'medium',
     questionSource: 'strict',
-    topicFocus: '',
   });
 
   const [isLoading, setIsLoading] = useState(false);
@@ -829,44 +713,31 @@ export function UploadView({
     setLoadingMessage(`Generating initial ${INITIAL_BATCH_SIZE} questions...`);
 
     try {
-      let effectiveDocumentText = existingDocument.text;
-      const normalizedTopicFocus = settings.topicFocus?.trim() || '';
-
-      if (normalizedTopicFocus) {
-        setLoadingMessage('Finding relevant section...');
-
-        const extractionResult = await extractTopicSection({
-          documentContent: existingDocument.text,
-          topicFocus: normalizedTopicFocus,
-        });
-
-        const extractedText = extractionResult.extractedText?.trim();
-        if (extractedText) {
-          effectiveDocumentText = extractedText;
-        }
-      }
-
-      setLoadingMessage(
-        `Generating initial ${INITIAL_BATCH_SIZE} questions...`,
-      );
-
       let attempt = 0;
       let result: { questions: Question[] } | null = null;
 
       while (attempt <= INITIAL_GENERATION_MAX_RETRIES && !result) {
         try {
-          result = (await withTimeout(
-            generateBatchTestQuestions({
-              documentContent: effectiveDocumentText,
-              questionType: settings.questionType,
-              difficulty: settings.difficulty,
-              questionSource: settings.questionSource,
-              existingQuestions: [],
-              batchSize: INITIAL_BATCH_SIZE,
-            }),
-            INITIAL_GENERATION_TIMEOUT,
-            'Initial generation timeout',
-          )) as { questions: Question[] };
+          const timeoutPromise = new Promise<never>((_, reject) =>
+            setTimeout(
+              () => reject(new Error('Initial generation timeout')),
+              INITIAL_GENERATION_TIMEOUT,
+            ),
+          );
+
+          const generationPromise = generateBatchTestQuestions({
+            documentContent: existingDocument.text,
+            questionType: settings.questionType,
+            difficulty: settings.difficulty,
+            questionSource: settings.questionSource,
+            existingQuestions: [],
+            batchSize: INITIAL_BATCH_SIZE,
+          });
+
+          result = (await Promise.race([
+            generationPromise,
+            timeoutPromise,
+          ])) as { questions: Question[] };
         } catch (error) {
           const errorMessage = ((error as Error)?.message || '').toLowerCase();
           const isRetryable =
@@ -895,10 +766,7 @@ export function UploadView({
         throw new Error('Initial question generation failed after retries.');
       }
 
-      const normalizedQuestions = normalizeGeneratedQuestions(
-        result.questions as Question[],
-      );
-      const dedupedQuestions = uniqueQuestions(normalizedQuestions);
+      const dedupedQuestions = uniqueQuestions(result.questions as Question[]);
 
       setGenerationProgress(100);
 
@@ -912,7 +780,7 @@ export function UploadView({
       }
 
       // Success! Move to test view
-      onTestGenerated(dedupedQuestions, settings, effectiveDocumentText);
+      onTestGenerated(dedupedQuestions, settings);
     } catch (error) {
       console.error(error);
       const errorMessage =
@@ -922,7 +790,6 @@ export function UploadView({
       const isServiceUnavailable =
         errorMessage.includes('503') ||
         errorMessage.toLowerCase().includes('overloaded');
-      const isTimeout = errorText.includes('timeout');
       const isNetworkFailure =
         errorText.includes('failed to fetch') ||
         errorText.includes('fetch') ||
@@ -931,7 +798,7 @@ export function UploadView({
         errorText.includes('etimedout') ||
         errorText.includes('enotfound');
 
-      if (isServiceUnavailable || isNetworkFailure || isTimeout) {
+      if (isServiceUnavailable || isNetworkFailure) {
         const fallbackQuestions = generateOfflineFallbackQuestions(
           existingDocument.text,
           settings,
@@ -945,7 +812,7 @@ export function UploadView({
             description:
               'Started test with fallback questions because the AI service is currently unreachable.',
           });
-          onTestGenerated(fallbackQuestions, settings, existingDocument.text);
+          onTestGenerated(fallbackQuestions, settings);
           return;
         }
       }
@@ -1182,27 +1049,6 @@ export function UploadView({
                 </Select>
               </div>
             </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="topic-focus">Chapter / Topic Focus</Label>
-              <Input
-                id="topic-focus"
-                type="text"
-                placeholder="e.g. Chapter 3, Photosynthesis, Unit 2..."
-                value={settings.topicFocus ?? ''}
-                onChange={(e) =>
-                  setSettings({
-                    ...settings,
-                    topicFocus: e.target.value,
-                  })
-                }
-                disabled={isLoading}
-              />
-              <p className="text-sm text-muted-foreground">
-                Leave blank to use the entire document.
-              </p>
-            </div>
-
             <div className="space-y-4">
               <div className="flex items-center space-x-2">
                 <Switch

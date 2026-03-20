@@ -58,15 +58,10 @@ import {
   HelpCircle,
 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
-import {
-  normalizeGeneratedQuestion,
-  normalizeGeneratedQuestions,
-} from '@/lib/question-normalization';
 
 type TestViewProps = {
   initialQuestions: Question[];
   documentInfo: { text: string };
-  effectiveDocumentText: string;
   settings: TestSettings;
   onTestFinished: (results: TestResult[], totalGenerated: number) => void;
 };
@@ -293,7 +288,6 @@ function AskAiDialog({
 export function TestView({
   initialQuestions,
   documentInfo,
-  effectiveDocumentText,
   settings,
   onTestFinished,
 }: TestViewProps) {
@@ -575,7 +569,7 @@ export function TestView({
             );
 
             const generationPromise = generateBatchTestQuestions({
-              documentContent: effectiveDocumentText,
+              documentContent: documentInfo.text,
               questionType: settings.questionType,
               difficulty: settings.difficulty,
               questionSource: settings.questionSource,
@@ -597,7 +591,7 @@ export function TestView({
 
             const mergedQuestions = appendUniqueQuestions(
               currentGeneratedQuestions,
-              normalizeGeneratedQuestions(result.questions as Question[]),
+              result.questions as Question[],
             );
             const addedCount =
               mergedQuestions.length - currentGeneratedQuestions.length;
@@ -622,7 +616,7 @@ export function TestView({
             );
 
             const generationPromise = generateSingleTestQuestion({
-              documentContent: effectiveDocumentText,
+              documentContent: documentInfo.text,
               questionType: settings.questionType,
               difficulty: settings.difficulty,
               questionSource: settings.questionSource,
@@ -643,7 +637,7 @@ export function TestView({
 
             const mergedQuestions = appendUniqueQuestions(
               currentGeneratedQuestions,
-              [normalizeGeneratedQuestion(result as Question)],
+              [result as Question],
             );
             const addedCount =
               mergedQuestions.length - currentGeneratedQuestions.length;
@@ -806,7 +800,7 @@ export function TestView({
 
               validationResult = await Promise.race([
                 validateUserAnswer({
-                  documentContent: effectiveDocumentText,
+                  documentContent: documentInfo.text,
                   question: currentQuestion.question,
                   userAnswer: userAnswer,
                   correctAnswer:
@@ -1082,7 +1076,7 @@ export function TestView({
         <AskAiDialog
           open={isAskAiDialogOpen}
           onOpenChange={setIsAskAiDialogOpen}
-          documentText={effectiveDocumentText}
+          documentText={documentInfo.text}
           question={currentQuestion}
           onTimerPause={() => setIsTimerPaused(true)}
           onTimerResume={() => setIsTimerPaused(false)}

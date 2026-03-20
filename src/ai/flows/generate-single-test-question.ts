@@ -242,7 +242,7 @@ Existing Questions:
 {{/each}}
 
 **CRITICAL INSTRUCTIONS FOR RESPONSE FORMAT:**
-- For **'multiple choice'**: You must provide the question text, an array of 4 choices, and the correct answer.
+- For **'multiple choice'**: You must provide the question text, an array of 4 choices, and the correct answer, ensure the correct answer is randomly placed among options A, B, C, or D. Do NOT favor any particular position (B or C). Vary the correct answer position across questions to create balanced, natural-looking question sets. Each position (A, B, C, D) should have roughly equal probability of being correct across the generated questions.
 - For **'true or false'**: You must provide the question statement and the boolean correct answer.
 - For **'fill-in-the-blank'**: You must provide the question sentence containing a blank, like "____".
 - For **'theory'**: You must provide an open-ended question.
