@@ -3,74 +3,43 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { generateSingleTestQuestion } from '@/ai/flows/generate-single-test-question';
 import { generateBatchTestQuestions } from '@/ai/flows/generate-batch-test-questions';
-import {
-  validateUserAnswer,
-  type ValidateUserAnswerOutput,
-} from '@/ai/flows/validate-user-answer';
+import { validateUserAnswer, type ValidateUserAnswerOutput } from '@/ai/flows/validate-user-answer';
 import { explainQuestion } from '@/ai/flows/explain-question';
-import type {
-  TestResult,
-  TestSettings,
-  Question,
-  MultipleChoiceQuestion,
-  TrueFalseQuestion,
-} from '@/lib/types';
+import type { TestResult, TestSettings, Question, MultipleChoiceQuestion, TrueFalseQuestion } from '@/lib/types';
 import { Button } from '@/components/ui/button';
-import {
-  Card,
-  CardContent,
-  CardFooter,
-  CardHeader,
-  CardTitle,
-} from '@/components/ui/card';
+import { Card, CardContent, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
 import { Textarea } from '@/components/ui/textarea';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Label } from '@/components/ui/label';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogDescription,
-  DialogFooter,
-  DialogClose,
-} from '@/components/ui/dialog';
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger,
-} from '@/components/ui/alert-dialog';
-import {
-  Loader2,
-  CheckCircle2,
-  XCircle,
-  Timer,
-  Hourglass,
-  LogOut,
-  Sparkles,
-  HelpCircle,
-} from 'lucide-react';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter, DialogClose } from '@/components/ui/dialog';
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog';
+import { Loader2, CheckCircle2, XCircle, Timer, Hourglass, LogOut, Sparkles, HelpCircle } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 
 type TestViewProps = {
   initialQuestions: Question[];
   documentInfo: { text: string };
+  effectiveDocumentText: string;
   settings: TestSettings;
   onTestFinished: (results: TestResult[], totalGenerated: number) => void;
+  showRestoreNotice?: boolean;
+  restoreSnapshot?: {
+    questions: Question[];
+    currentQuestionIndex: number;
+    userAnswer: string;
+    results: TestResult[];
+    currentResult: {
+      isCorrect: boolean;
+      feedback: string;
+    } | null;
+    isAnswered: boolean;
+    timeLeft: number | null;
+    generatedQuestionCount: number;
+  } | null;
 };
 
-const validationSteps = [
-  'Analyzing your answer...',
-  'Comparing with the document...',
-  'Finalizing feedback...',
-];
+const validationSteps = ['Analyzing your answer...', 'Comparing with the document...', 'Finalizing feedback...'];
 
 const BATCH_SIZE = 5;
 const BATCH_TIMEOUT = 60000; // 60 seconds for batch
@@ -96,84 +65,8 @@ const normalizeQuestionText = (value: string) =>
     .replace(/\s+/g, ' ')
     .trim();
 
-const normalizeText = (value: string) =>
-  value
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-
-const isTransientAiError = (message: string) => {
-  const text = message.toLowerCase();
-  return (
-    text.includes('timeout') ||
-    text.includes('fetch') ||
-    text.includes('network') ||
-    text.includes('503') ||
-    text.includes('server') ||
-    text.includes('econnreset') ||
-    text.includes('etimedout') ||
-    text.includes('enotfound') ||
-    text.includes('overloaded')
-  );
-};
-
-const getOfflineValidationResult = (
-  question: Question,
-  userAnswer: string,
-): ValidateUserAnswerOutput => {
-  const normalizedQuestion = normalizeText(question.question);
-  const normalizedAnswer = normalizeText(userAnswer);
-
-  if (!normalizedAnswer) {
-    return {
-      isCorrect: false,
-      feedback:
-        'No answer provided. Offline validation is active because the AI service is currently unreachable.',
-    };
-  }
-
-  const answerWords = new Set(normalizedAnswer.split(' ').filter(Boolean));
-  const questionWords = new Set(normalizedQuestion.split(' ').filter(Boolean));
-  const overlapCount = Array.from(answerWords).filter((word) =>
-    questionWords.has(word),
-  ).length;
-  const overlapRatio = answerWords.size ? overlapCount / answerWords.size : 0;
-
-  if ('correctAnswer' in question && question.correctAnswer) {
-    const normalizedCorrect = normalizeText(String(question.correctAnswer));
-    const hasCorrect =
-      normalizedCorrect.length > 0 &&
-      normalizedAnswer.includes(normalizedCorrect);
-
-    if (hasCorrect) {
-      return {
-        isCorrect: true,
-        feedback:
-          'Likely correct based on offline validation (AI service unavailable).',
-      };
-    }
-  }
-
-  const likelyCorrect = normalizedAnswer.length >= 15 && overlapRatio >= 0.25;
-
-  return {
-    isCorrect: likelyCorrect,
-    feedback: likelyCorrect
-      ? 'Your answer appears reasonable based on offline checks while AI is unavailable.'
-      : 'Offline validation could not confidently confirm this answer while AI is unavailable. You can revise and resubmit.',
-  };
-};
-
-const appendUniqueQuestions = (
-  existingQuestions: Question[],
-  incomingQuestions: Question[],
-) => {
-  const seen = new Set(
-    existingQuestions.map((question) =>
-      normalizeQuestionText(question.question),
-    ),
-  );
+const appendUniqueQuestions = (existingQuestions: Question[], incomingQuestions: Question[]) => {
+  const seen = new Set(existingQuestions.map((question) => normalizeQuestionText(question.question)));
   const uniqueIncoming = incomingQuestions.filter((question) => {
     const normalized = normalizeQuestionText(question.question);
     if (!normalized || seen.has(normalized)) {
@@ -186,21 +79,7 @@ const appendUniqueQuestions = (
   return [...existingQuestions, ...uniqueIncoming];
 };
 
-function AskAiDialog({
-  open,
-  onOpenChange,
-  documentText,
-  question,
-  onTimerPause,
-  onTimerResume,
-}: {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  documentText: string;
-  question: Question;
-  onTimerPause: () => void;
-  onTimerResume: () => void;
-}) {
+function AskAiDialog({ open, onOpenChange, documentText, question }: { open: boolean; onOpenChange: (open: boolean) => void; documentText: string; question: Question }) {
   const [isLoading, setIsLoading] = useState(false);
   const [explanation, setExplanation] = useState<string | null>(null);
   const { toast } = useToast();
@@ -217,10 +96,7 @@ function AskAiDialog({
     setIsLoading(true);
     setExplanation(null);
     try {
-      const correctAnswer =
-        'correctAnswer' in question
-          ? String(question.correctAnswer)
-          : 'N/A for this question type';
+      const correctAnswer = 'correctAnswer' in question ? String(question.correctAnswer) : 'N/A for this question type';
 
       const result = await explainQuestion({
         documentContent: documentText,
@@ -230,8 +106,7 @@ function AskAiDialog({
       setExplanation(result.explanation);
     } catch (error) {
       console.error('Ask AI Error:', error);
-      const errorMessage =
-        (error as Error)?.message || 'An unknown error occurred.';
+      const errorMessage = (error as Error)?.message || 'An unknown error occurred.';
       toast({
         variant: 'destructive',
         title: 'Error Getting Explanation',
@@ -251,9 +126,7 @@ function AskAiDialog({
             <Sparkles className="h-5 w-5 text-primary" />
             AI Explanation
           </DialogTitle>
-          <DialogDescription>
-            Here's a detailed breakdown of the question and answer.
-          </DialogDescription>
+          <DialogDescription>Here's a detailed breakdown of the question and answer.</DialogDescription>
         </DialogHeader>
         <div className="py-4">
           {isLoading && (
@@ -285,40 +158,41 @@ function AskAiDialog({
   );
 }
 
-export function TestView({
-  initialQuestions,
-  documentInfo,
-  settings,
-  onTestFinished,
-}: TestViewProps) {
+export function TestView({ initialQuestions, documentInfo, effectiveDocumentText, settings, onTestFinished, showRestoreNotice = false, restoreSnapshot = null }: TestViewProps) {
   const { toast, dismiss } = useToast();
-  const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
-  const [userAnswer, setUserAnswer] = useState('');
-  const [results, setResults] = useState<TestResult[]>([]);
-  const [currentResult, setCurrentResult] =
-    useState<ValidateUserAnswerOutput | null>(null);
+  const [questions, setQuestions] = useState<Question[]>(() => {
+    if (restoreSnapshot && Array.isArray(restoreSnapshot.questions) && restoreSnapshot.questions.length > 0) {
+      return restoreSnapshot.questions;
+    }
+    return shuffleArray(initialQuestions);
+  });
+  const [currentQuestionIndex, setCurrentQuestionIndex] = useState(() => {
+    if (restoreSnapshot && restoreSnapshot.questions.length > 0) {
+      return Math.max(0, Math.min(restoreSnapshot.currentQuestionIndex, restoreSnapshot.questions.length - 1));
+    }
+    return 0;
+  });
+  const [userAnswer, setUserAnswer] = useState(() => (restoreSnapshot ? restoreSnapshot.userAnswer : ''));
+  const [results, setResults] = useState<TestResult[]>(() => (restoreSnapshot ? restoreSnapshot.results : []));
+  const [currentResult, setCurrentResult] = useState<ValidateUserAnswerOutput | null>(() => (restoreSnapshot ? restoreSnapshot.currentResult : null));
   const [isLoading, setIsLoading] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
   const [loadingStep, setLoadingStep] = useState(0);
-  const [isAnswered, setIsAnswered] = useState(false);
+  const [isAnswered, setIsAnswered] = useState(() => (restoreSnapshot ? restoreSnapshot.isAnswered : false));
 
   const [isTimerPaused, setIsTimerPaused] = useState(false);
-  const [timeLeft, setTimeLeft] = useState<number | null>(
-    settings.timerEnabled && settings.timerDuration
-      ? settings.timerDuration * 60
-      : null,
-  );
+  const [timeLeft, setTimeLeft] = useState<number | null>(() => {
+    if (restoreSnapshot) {
+      return restoreSnapshot.timeLeft;
+    }
+    return settings.timerEnabled && settings.timerDuration ? settings.timerDuration * 60 : null;
+  });
 
-  const [questions, setQuestions] = useState<Question[]>(() =>
-    shuffleArray(initialQuestions),
-  );
   const backgroundGenerationStarted = useRef(false);
   const generationErrorToastId = useRef<string | null>(null);
   const [isAskAiDialogOpen, setIsAskAiDialogOpen] = useState(false);
-  const [networkLost, setNetworkLost] = useState(false);
-  const [validationSubmitError, setValidationSubmitError] = useState<
-    string | null
-  >(null);
+  const [validationSubmitError, setValidationSubmitError] = useState<string | null>(null);
+  const [sessionRestored, setSessionRestored] = useState(showRestoreNotice);
 
   const totalQuestionsToGenerate = settings.numberOfQuestions;
   const currentQuestion = questions[currentQuestionIndex] ?? questions[0];
@@ -328,22 +202,17 @@ export function TestView({
 
   const timerCallback = useRef<() => void>();
 
-  const upsertResult = useCallback(
-    (previousResults: TestResult[], nextResult: TestResult) => {
-      const existingIndex = previousResults.findIndex(
-        (result) => result.question.question === nextResult.question.question,
-      );
+  const upsertResult = useCallback((previousResults: TestResult[], nextResult: TestResult) => {
+    const existingIndex = previousResults.findIndex((result) => result.question.question === nextResult.question.question);
 
-      if (existingIndex === -1) {
-        return [...previousResults, nextResult];
-      }
+    if (existingIndex === -1) {
+      return [...previousResults, nextResult];
+    }
 
-      const updatedResults = [...previousResults];
-      updatedResults[existingIndex] = nextResult;
-      return updatedResults;
-    },
-    [],
-  );
+    const updatedResults = [...previousResults];
+    updatedResults[existingIndex] = nextResult;
+    return updatedResults;
+  }, []);
 
   const finishTest = useCallback(
     (finalResults: TestResult[]) => {
@@ -356,65 +225,25 @@ export function TestView({
   );
 
   useEffect(() => {
-    if (typeof window === 'undefined') {
+    setSessionRestored(showRestoreNotice);
+    if (showRestoreNotice) {
+      toast({
+        title: 'Test session restored',
+        description: 'Your previous test progress has been recovered.',
+      });
+    }
+  }, [showRestoreNotice, toast]);
+
+  useEffect(() => {
+    if (!restoreSnapshot) {
       return;
     }
 
-    try {
-      const stored = window.localStorage.getItem(TEST_PROGRESS_KEY);
-      if (!stored) {
-        return;
-      }
-
-      const parsed = JSON.parse(stored) as {
-        docSignature: string;
-        settingsSignature: string;
-        currentQuestionIndex: number;
-        userAnswer: string;
-        results: TestResult[];
-        currentResult: ValidateUserAnswerOutput | null;
-        isAnswered: boolean;
-        timeLeft: number | null;
-        questions: Question[];
-      };
-
-      const currentDocSignature = `${documentInfo.text.length}:${documentInfo.text.slice(0, 120)}`;
-      const currentSettingsSignature = JSON.stringify(settings);
-
-      if (
-        parsed.docSignature !== currentDocSignature ||
-        parsed.settingsSignature !== currentSettingsSignature
-      ) {
-        return;
-      }
-
-      if (Array.isArray(parsed.questions) && parsed.questions.length > 0) {
-        setQuestions(parsed.questions);
-      }
-
-      if (typeof parsed.currentQuestionIndex === 'number') {
-        setCurrentQuestionIndex(Math.max(0, parsed.currentQuestionIndex));
-      }
-
-      setUserAnswer(
-        typeof parsed.userAnswer === 'string' ? parsed.userAnswer : '',
-      );
-      setResults(Array.isArray(parsed.results) ? parsed.results : []);
-      setCurrentResult(parsed.currentResult ?? null);
-      setIsAnswered(Boolean(parsed.isAnswered));
-
-      if (settings.timerEnabled) {
-        setTimeLeft(
-          typeof parsed.timeLeft === 'number' || parsed.timeLeft === null
-            ? parsed.timeLeft
-            : timeLeft,
-        );
-      }
-    } catch (error) {
-      console.error('Failed to restore test progress:', error);
+    const generatedCount = restoreSnapshot.generatedQuestionCount;
+    if (generatedCount >= totalQuestionsToGenerate || questions.length >= totalQuestionsToGenerate) {
+      backgroundGenerationStarted.current = true;
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [restoreSnapshot, questions.length, totalQuestionsToGenerate]);
 
   useEffect(() => {
     if (typeof window === 'undefined') {
@@ -425,6 +254,9 @@ export function TestView({
       const payload = {
         docSignature: `${documentInfo.text.length}:${documentInfo.text.slice(0, 120)}`,
         settingsSignature: JSON.stringify(settings),
+        documentInfo,
+        settings,
+        effectiveDocumentText,
         currentQuestionIndex,
         userAnswer,
         results,
@@ -432,31 +264,21 @@ export function TestView({
         isAnswered,
         timeLeft,
         questions,
+        generatedQuestionCount: questions.length,
       };
 
       window.localStorage.setItem(TEST_PROGRESS_KEY, JSON.stringify(payload));
     } catch (error) {
       console.error('Failed to persist test progress:', error);
     }
-  }, [
-    documentInfo.text,
-    settings,
-    currentQuestionIndex,
-    userAnswer,
-    results,
-    currentResult,
-    isAnswered,
-    timeLeft,
-    questions,
-  ]);
+  }, [documentInfo.text, documentInfo, effectiveDocumentText, settings, currentQuestionIndex, userAnswer, results, currentResult, isAnswered, timeLeft, questions]);
 
   // Check if next question is ready
   const isNextQuestionReady = questions.length > currentQuestionIndex + 1;
   const isTestFinished = currentQuestionIndex >= totalQuestionsToGenerate - 1;
 
   // Timer should pause ONLY when waiting for next question after submit
-  const shouldPauseTimer =
-    isAnswered && !isNextQuestionReady && !isTestFinished;
+  const shouldPauseTimer = isAnswered && !isNextQuestionReady && !isTestFinished;
 
   // Timer logic
   useEffect(() => {
@@ -477,14 +299,9 @@ export function TestView({
 
         // Timer is at 1, about to hit 0. Finish the test.
         let finalResults = [...results];
-        const answeredQuestions = new Set(
-          finalResults.map((r) => r.question.question),
-        );
+        const answeredQuestions = new Set(finalResults.map((r) => r.question.question));
 
-        if (
-          currentQuestion &&
-          !answeredQuestions.has(currentQuestion.question)
-        ) {
+        if (currentQuestion && !answeredQuestions.has(currentQuestion.question)) {
           finalResults.push({
             question: currentQuestion,
             userAnswer: '',
@@ -509,14 +326,7 @@ export function TestView({
         return 0;
       });
     };
-  }, [
-    isLoading,
-    shouldPauseTimer,
-    results,
-    currentQuestion,
-    questions,
-    finishTest,
-  ]);
+  }, [isLoading, shouldPauseTimer, results, currentQuestion, questions, finishTest]);
 
   useEffect(() => {
     if (!settings.timerEnabled) {
@@ -533,10 +343,7 @@ export function TestView({
   // Smart background question generation with batching
   useEffect(() => {
     const generateRemainingQuestions = async () => {
-      if (
-        backgroundGenerationStarted.current ||
-        questions.length >= totalQuestionsToGenerate
-      ) {
+      if (backgroundGenerationStarted.current || questions.length >= totalQuestionsToGenerate) {
         return;
       }
       backgroundGenerationStarted.current = true;
@@ -544,10 +351,7 @@ export function TestView({
       let currentGeneratedQuestions = [...questions];
       let retryCount = 0;
 
-      for (
-        let i = currentGeneratedQuestions.length;
-        i < totalQuestionsToGenerate;
-      ) {
+      for (let i = currentGeneratedQuestions.length; i < totalQuestionsToGenerate; ) {
         // Pause generation if validation is in progress
         while (isLoading) {
           await new Promise((resolve) => setTimeout(resolve, 500));
@@ -561,40 +365,26 @@ export function TestView({
             // Use batch generation for 5+ questions
             console.log(`Generating batch of ${BATCH_SIZE} questions...`);
 
-            const timeoutPromise = new Promise((_, reject) =>
-              setTimeout(
-                () => reject(new Error('Batch generation timeout')),
-                BATCH_TIMEOUT,
-              ),
-            );
+            const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('Batch generation timeout')), BATCH_TIMEOUT));
 
             const generationPromise = generateBatchTestQuestions({
-              documentContent: documentInfo.text,
+              documentContent: effectiveDocumentText,
               questionType: settings.questionType,
               difficulty: settings.difficulty,
               questionSource: settings.questionSource,
-              existingQuestions: currentGeneratedQuestions.map(
-                (q) => q.question,
-              ),
+              existingQuestions: currentGeneratedQuestions.map((q) => q.question),
               batchSize: BATCH_SIZE,
             });
 
-            const result = (await Promise.race([
-              generationPromise,
-              timeoutPromise,
-            ])) as any;
+            const result = (await Promise.race([generationPromise, timeoutPromise])) as any;
 
             if (generationErrorToastId.current) {
               dismiss(generationErrorToastId.current);
               generationErrorToastId.current = null;
             }
 
-            const mergedQuestions = appendUniqueQuestions(
-              currentGeneratedQuestions,
-              result.questions as Question[],
-            );
-            const addedCount =
-              mergedQuestions.length - currentGeneratedQuestions.length;
+            const mergedQuestions = appendUniqueQuestions(currentGeneratedQuestions, result.questions as Question[]);
+            const addedCount = mergedQuestions.length - currentGeneratedQuestions.length;
 
             if (addedCount === 0) {
               throw new Error('Duplicate questions generated in batch');
@@ -608,39 +398,25 @@ export function TestView({
             // Generate individually for < 5 questions
             console.log(`Generating individual question ${i + 1}...`);
 
-            const timeoutPromise = new Promise((_, reject) =>
-              setTimeout(
-                () => reject(new Error('Individual generation timeout')),
-                INDIVIDUAL_TIMEOUT,
-              ),
-            );
+            const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('Individual generation timeout')), INDIVIDUAL_TIMEOUT));
 
             const generationPromise = generateSingleTestQuestion({
-              documentContent: documentInfo.text,
+              documentContent: effectiveDocumentText,
               questionType: settings.questionType,
               difficulty: settings.difficulty,
               questionSource: settings.questionSource,
-              existingQuestions: currentGeneratedQuestions.map(
-                (q) => q.question,
-              ),
+              existingQuestions: currentGeneratedQuestions.map((q) => q.question),
             });
 
-            const result = (await Promise.race([
-              generationPromise,
-              timeoutPromise,
-            ])) as any;
+            const result = (await Promise.race([generationPromise, timeoutPromise])) as any;
 
             if (generationErrorToastId.current) {
               dismiss(generationErrorToastId.current);
               generationErrorToastId.current = null;
             }
 
-            const mergedQuestions = appendUniqueQuestions(
-              currentGeneratedQuestions,
-              [result as Question],
-            );
-            const addedCount =
-              mergedQuestions.length - currentGeneratedQuestions.length;
+            const mergedQuestions = appendUniqueQuestions(currentGeneratedQuestions, [result as Question]);
+            const addedCount = mergedQuestions.length - currentGeneratedQuestions.length;
 
             if (addedCount === 0) {
               throw new Error('Duplicate question generated');
@@ -653,15 +429,11 @@ export function TestView({
           }
         } catch (error) {
           console.error('Failed to generate question(s):', error);
-          const errorMessage =
-            (error as Error)?.message || 'An unknown error occurred.';
+          const errorMessage = (error as Error)?.message || 'An unknown error occurred.';
           const isRateLimitError = errorMessage.includes('429');
-          const isServiceUnavailable =
-            errorMessage.includes('503') ||
-            errorMessage.toLowerCase().includes('overloaded');
+          const isServiceUnavailable = errorMessage.includes('503') || errorMessage.toLowerCase().includes('overloaded');
           const isTimeout = errorMessage.includes('timeout');
-          const isNetworkError =
-            errorMessage.includes('network') || errorMessage.includes('fetch');
+          const isNetworkError = errorMessage.toLowerCase().includes('network') || errorMessage.toLowerCase().includes('fetch') || errorMessage.toLowerCase().includes('econnreset') || errorMessage.toLowerCase().includes('etimedout') || errorMessage.toLowerCase().includes('enotfound');
 
           if (isRateLimitError) {
             toast({
@@ -670,15 +442,7 @@ export function TestView({
               description: `You've exceeded the API quota. Generated ${currentGeneratedQuestions.length}/${totalQuestionsToGenerate} questions.`,
             });
             break; // Stop trying
-          } else if (isNetworkError) {
-            setNetworkLost(true);
-            toast({
-              variant: 'destructive',
-              title: 'Network Connection Lost',
-              description: `Continuing with ${currentGeneratedQuestions.length} generated questions.`,
-            });
-            break; // Stop trying
-          } else if (isServiceUnavailable || isTimeout) {
+          } else if (isServiceUnavailable || isTimeout || isNetworkError) {
             // Retry logic
             if (retryCount < MAX_RETRIES) {
               retryCount++;
@@ -704,7 +468,7 @@ export function TestView({
             toast({
               variant: 'destructive',
               title: 'Question Generation Failed',
-              description: `An unexpected error occurred. Continuing with ${currentGeneratedQuestions.length} questions.`,
+              description: `Continuing with ${currentGeneratedQuestions.length} questions due to a generation error.`,
             });
             break; // Stop trying
           }
@@ -721,14 +485,32 @@ export function TestView({
 
     generateRemainingQuestions();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isLoading]);
+  }, [isLoading, effectiveDocumentText]);
 
   useEffect(() => {
+    const question = questions[currentQuestionIndex];
+    if (!question) {
+      return;
+    }
+
+    const matchedResult = results.find((result) => result.question.question === question.question);
+
+    if (matchedResult) {
+      setIsAnswered(true);
+      setCurrentResult({
+        isCorrect: matchedResult.isCorrect,
+        feedback: matchedResult.feedback,
+      });
+      setUserAnswer(matchedResult.userAnswer);
+      setValidationSubmitError(null);
+      return;
+    }
+
     setUserAnswer('');
     setCurrentResult(null);
     setIsAnswered(false);
     setValidationSubmitError(null);
-  }, [currentQuestionIndex]);
+  }, [currentQuestionIndex, questions, results]);
 
   useEffect(() => {
     let interval: NodeJS.Timeout;
@@ -743,11 +525,7 @@ export function TestView({
   const handleAnswerSubmit = async () => {
     setValidationSubmitError(null);
 
-    if (
-      !userAnswer &&
-      (currentQuestion.type === 'multiple choice' ||
-        currentQuestion.type === 'true or false')
-    ) {
+    if (!userAnswer && (currentQuestion.type === 'multiple choice' || currentQuestion.type === 'true or false')) {
       toast({
         variant: 'destructive',
         title: 'No Answer Selected',
@@ -764,77 +542,54 @@ export function TestView({
       let validationResult: ValidateUserAnswerOutput | null = null;
 
       if (currentQuestion.type === 'multiple choice') {
-        const isCorrect =
-          userAnswer ===
-          (currentQuestion as MultipleChoiceQuestion).correctAnswer;
-        const feedback = isCorrect
-          ? 'Correct!'
-          : `Incorrect. The correct answer is ${(currentQuestion as MultipleChoiceQuestion).correctAnswer}.`;
+        const isCorrect = userAnswer === (currentQuestion as MultipleChoiceQuestion).correctAnswer;
+        const feedback = isCorrect ? 'Correct!' : `Incorrect. The correct answer is ${(currentQuestion as MultipleChoiceQuestion).correctAnswer}.`;
         validationResult = { isCorrect, feedback };
       } else if (currentQuestion.type === 'true or false') {
-        const isCorrect =
-          userAnswer ===
-          String((currentQuestion as TrueFalseQuestion).correctAnswer);
-        const feedback = isCorrect
-          ? 'Correct!'
-          : `Incorrect. The correct answer is ${String((currentQuestion as TrueFalseQuestion).correctAnswer)}.`;
+        const isCorrect = userAnswer === String((currentQuestion as TrueFalseQuestion).correctAnswer);
+        const feedback = isCorrect ? 'Correct!' : `Incorrect. The correct answer is ${String((currentQuestion as TrueFalseQuestion).correctAnswer)}.`;
         validationResult = { isCorrect, feedback };
       } else {
-        if (networkLost) {
-          validationResult = getOfflineValidationResult(
-            currentQuestion,
-            userAnswer,
-          );
-        } else {
-          let attempt = 0;
-          let lastError: unknown = null;
+        let attempt = 0;
+        let lastError: unknown = null;
 
-          while (attempt <= MAX_RETRIES) {
-            try {
-              const timeoutPromise = new Promise<never>((_, reject) =>
-                setTimeout(
-                  () => reject(new Error('Validation timeout')),
-                  VALIDATION_TIMEOUT,
-                ),
-              );
+        while (attempt <= MAX_RETRIES) {
+          try {
+            const timeoutPromise = new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Validation timeout')), VALIDATION_TIMEOUT));
 
-              validationResult = await Promise.race([
-                validateUserAnswer({
-                  documentContent: documentInfo.text,
-                  question: currentQuestion.question,
-                  userAnswer: userAnswer,
-                  correctAnswer:
-                    'correctAnswer' in currentQuestion
-                      ? String(currentQuestion.correctAnswer)
-                      : '',
-                }),
-                timeoutPromise,
-              ]);
+            validationResult = await Promise.race([
+              validateUserAnswer({
+                documentContent: documentInfo.text,
+                question: currentQuestion.question,
+                userAnswer: userAnswer,
+                correctAnswer: 'correctAnswer' in currentQuestion ? String(currentQuestion.correctAnswer) : '',
+              }),
+              timeoutPromise,
+            ]);
 
-              lastError = null;
-              break;
-            } catch (error) {
-              lastError = error;
-              const errorMessage = (error as Error)?.message || '';
-              const isRetryableError = isTransientAiError(errorMessage);
+            lastError = null;
+            break;
+          } catch (error) {
+            lastError = error;
+            const errorMessage = ((error as Error)?.message || '').toLowerCase();
+            const isRetryableError = errorMessage.includes('timeout') || errorMessage.includes('fetch') || errorMessage.includes('network') || errorMessage.includes('503') || errorMessage.includes('server') || errorMessage.includes('econnreset') || errorMessage.includes('etimedout') || errorMessage.includes('enotfound') || errorMessage.includes('overloaded');
 
-              if (!isRetryableError || attempt >= MAX_RETRIES) {
-                throw error;
-              }
-
-              attempt++;
-              toast({
-                variant: 'destructive',
-                title: 'Validation Failed',
-                description: `Retrying validation... (${attempt}/${MAX_RETRIES})`,
-              });
-              await new Promise((resolve) => setTimeout(resolve, 1500));
+            if (!isRetryableError || attempt >= MAX_RETRIES) {
+              throw error;
             }
-          }
 
-          if (lastError) {
-            throw lastError;
+            attempt++;
+            toast({
+              variant: 'destructive',
+              title: 'Validation Failed',
+              description: `Retrying validation... (${attempt}/${MAX_RETRIES})`,
+            });
+            await new Promise((resolve) => setTimeout(resolve, 1500));
           }
+        }
+
+        if (lastError) {
+          throw lastError;
         }
       }
 
@@ -853,52 +608,13 @@ export function TestView({
       setIsAnswered(true);
     } catch (error) {
       console.error(error);
-      const errorMessage =
-        (error as Error)?.message || 'An unknown error occurred.';
-      const isTransientError = isTransientAiError(errorMessage);
-
-      if (
-        isTransientError &&
-        (currentQuestion.type === 'fill-in-the-blank' ||
-          currentQuestion.type === 'theory')
-      ) {
-        setNetworkLost(true);
-        const fallbackResult = getOfflineValidationResult(
-          currentQuestion,
-          userAnswer,
-        );
-
-        toast({
-          variant: 'destructive',
-          title: 'AI Unavailable - Using Offline Validation',
-          description:
-            'Switched to offline answer checking due to network/service issues.',
-        });
-
-        setCurrentResult(fallbackResult);
-        setResults((prev) =>
-          upsertResult(prev, {
-            question: currentQuestion,
-            userAnswer: userAnswer,
-            ...fallbackResult,
-          }),
-        );
-        setIsAnswered(true);
-        setValidationSubmitError(null);
-        return;
-      }
-
       toast({
         variant: 'destructive',
         title: 'Validation Error',
-        description: isTransientError
-          ? 'Validation failed after retry. Please submit again.'
-          : 'An error occurred while validating your answer. Please submit again.',
+        description: 'Validation failed. Please submit again.',
       });
 
-      setValidationSubmitError(
-        'Validation failed after retry. Please submit again.',
-      );
+      setValidationSubmitError('Validation failed after retry. Please submit again.');
 
       setCurrentResult(null);
       setIsAnswered(false);
@@ -907,37 +623,21 @@ export function TestView({
     }
   };
 
-  const handleNavigateLikeSkip = (direction: -1 | 1) => {
-    const skippedResult = {
-      question: currentQuestion,
-      userAnswer: '',
-      isCorrect: false,
-      feedback: 'This question was skipped.',
-    };
-
-    if (direction === 1) {
-      if (currentQuestionIndex < totalQuestionsToGenerate - 1) {
-        setResults((prev) => upsertResult(prev, skippedResult));
-        setCurrentQuestionIndex((prev) => prev + 1);
-      } else {
-        const finalResults = upsertResult(results, skippedResult);
-        setResults(finalResults);
-        finishTest(finalResults);
-      }
-    } else {
-      if (currentQuestionIndex > 0) {
-        setResults((prev) => upsertResult(prev, skippedResult));
-        setCurrentQuestionIndex((prev) => prev - 1);
-      }
+  const handlePrevious = () => {
+    if (currentQuestionIndex > 0) {
+      setCurrentQuestionIndex((prev) => prev - 1);
     }
   };
 
-  const handlePrevious = () => {
-    handleNavigateLikeSkip(-1);
-  };
-
   const handleNextSkip = () => {
-    handleNavigateLikeSkip(1);
+    if (currentQuestionIndex < totalQuestionsToGenerate - 1) {
+      if (isNextQuestionReady) {
+        setCurrentQuestionIndex((prev) => prev + 1);
+      }
+      return;
+    }
+
+    finishTest(results);
   };
 
   const handleNext = () => {
@@ -951,11 +651,7 @@ export function TestView({
   // Keyboard shortcuts
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (
-        event.target instanceof HTMLTextAreaElement &&
-        event.key === 'Enter' &&
-        !event.shiftKey
-      ) {
+      if (event.target instanceof HTMLTextAreaElement && event.key === 'Enter' && !event.shiftKey) {
         return;
       }
 
@@ -969,21 +665,13 @@ export function TestView({
 
       if (isLoading) return;
 
-      const isMcqOrTf =
-        currentQuestion.type === 'multiple choice' ||
-        currentQuestion.type === 'true or false';
-      const isText =
-        currentQuestion.type === 'fill-in-the-blank' ||
-        currentQuestion.type === 'theory';
+      const isMcqOrTf = currentQuestion.type === 'multiple choice' || currentQuestion.type === 'true or false';
+      const isText = currentQuestion.type === 'fill-in-the-blank' || currentQuestion.type === 'theory';
 
       if (isMcqOrTf && event.key === 'Enter') {
         event.preventDefault();
         submitButtonRef.current?.click();
-      } else if (
-        isText &&
-        event.key === 'Enter' &&
-        (event.metaKey || event.ctrlKey || event.shiftKey)
-      ) {
+      } else if (isText && event.key === 'Enter' && (event.metaKey || event.ctrlKey || event.shiftKey)) {
         event.preventDefault();
         submitButtonRef.current?.click();
       }
@@ -1010,22 +698,11 @@ export function TestView({
       case 'multiple choice':
         const mcq = currentQuestion as MultipleChoiceQuestion;
         return (
-          <RadioGroup
-            value={userAnswer}
-            onValueChange={setUserAnswer}
-            disabled={isAnswered || isLoading}
-            className="space-y-2"
-          >
+          <RadioGroup value={userAnswer} onValueChange={setUserAnswer} disabled={isAnswered || isLoading} className="space-y-2">
             {mcq.choices.map((choice, index) => (
-              <div
-                key={index}
-                className="flex items-center space-x-3 p-3 rounded-md border border-input has-[:checked]:border-primary has-[:checked]:bg-primary/5"
-              >
+              <div key={index} className="flex items-center space-x-3 p-3 rounded-md border border-input has-[:checked]:border-primary has-[:checked]:bg-primary/5">
                 <RadioGroupItem value={choice} id={`choice-${index}`} />
-                <Label
-                  htmlFor={`choice-${index}`}
-                  className="flex-1 cursor-pointer"
-                >
+                <Label htmlFor={`choice-${index}`} className="flex-1 cursor-pointer">
                   {choice}
                 </Label>
               </div>
@@ -1035,20 +712,10 @@ export function TestView({
       case 'true or false':
         return (
           <div className="flex flex-col sm:flex-row gap-4">
-            <Button
-              variant={userAnswer === 'true' ? 'default' : 'outline'}
-              onClick={() => setUserAnswer('true')}
-              disabled={isAnswered || isLoading}
-              className="flex-1 h-12 text-lg"
-            >
+            <Button variant={userAnswer === 'true' ? 'default' : 'outline'} onClick={() => setUserAnswer('true')} disabled={isAnswered || isLoading} className="flex-1 h-12 text-lg">
               True
             </Button>
-            <Button
-              variant={userAnswer === 'false' ? 'default' : 'outline'}
-              onClick={() => setUserAnswer('false')}
-              disabled={isAnswered || isLoading}
-              className="flex-1 h-12 text-lg"
-            >
+            <Button variant={userAnswer === 'false' ? 'default' : 'outline'} onClick={() => setUserAnswer('false')} disabled={isAnswered || isLoading} className="flex-1 h-12 text-lg">
               False
             </Button>
           </div>
@@ -1056,15 +723,7 @@ export function TestView({
       case 'fill-in-the-blank':
       case 'theory':
       default:
-        return (
-          <Textarea
-            placeholder="Your answer here... (Shift+Enter or Ctrl+Enter to submit)"
-            value={userAnswer}
-            onChange={(e) => setUserAnswer(e.target.value)}
-            rows={5}
-            disabled={isAnswered || isLoading}
-          />
-        );
+        return <Textarea placeholder="Your answer here... (Shift+Enter or Ctrl+Enter to submit)" value={userAnswer} onChange={(e) => setUserAnswer(e.target.value)} rows={5} disabled={isAnswered || isLoading} />;
     }
   };
 
@@ -1072,35 +731,26 @@ export function TestView({
 
   return (
     <div className="w-full max-w-3xl mx-auto flex-grow flex flex-col justify-center space-y-4">
-      {currentQuestion && (
-        <AskAiDialog
-          open={isAskAiDialogOpen}
-          onOpenChange={setIsAskAiDialogOpen}
-          documentText={documentInfo.text}
-          question={currentQuestion}
-          onTimerPause={() => setIsTimerPaused(true)}
-          onTimerResume={() => setIsTimerPaused(false)}
-        />
+      {currentQuestion && <AskAiDialog open={isAskAiDialogOpen} onOpenChange={setIsAskAiDialogOpen} documentText={documentInfo.text} question={currentQuestion} />}
+
+      {sessionRestored && (
+        <Alert className="border-primary/40 bg-primary/5">
+          <AlertTitle>Test session restored</AlertTitle>
+          <AlertDescription>Your previous progress has been recovered from this device.</AlertDescription>
+        </Alert>
       )}
 
       <div className="flex justify-between items-center gap-4">
         <div className="flex items-center gap-4 ml-auto">
           {timeLeft !== null && (
             <div className="flex items-center gap-2 text-lg font-semibold text-primary shrink-0">
-              {shouldPauseTimer || isTimerPaused ? (
-                <Hourglass className="h-5 w-5" />
-              ) : (
-                <Timer className="h-5 w-5" />
-              )}
+              {shouldPauseTimer || isTimerPaused ? <Hourglass className="h-5 w-5" /> : <Timer className="h-5 w-5" />}
               <span>{formatTime(timeLeft)}</span>
             </div>
           )}
         </div>
       </div>
-      <Card
-        className="w-full animate-in fade-in-50 duration-500"
-        key={currentQuestionIndex}
-      >
+      <Card className="w-full animate-in fade-in-50 duration-500" key={currentQuestionIndex}>
         <CardHeader>
           <div className="flex justify-between items-center">
             <CardTitle className="text-2xl font-headline">
@@ -1110,8 +760,7 @@ export function TestView({
               <div className="flex items-center gap-2 text-sm text-muted-foreground">
                 <Loader2 className="h-4 w-4 animate-spin" />
                 <span>
-                  Generating questions... ({questionsAvailable}/
-                  {totalQuestionsToGenerate})
+                  Generating questions... ({questionsAvailable}/{totalQuestionsToGenerate})
                 </span>
               </div>
             )}
@@ -1122,43 +771,18 @@ export function TestView({
 
           {renderAnswerInput()}
 
-          {validationSubmitError && !isAnswered && (
-            <p className="text-sm text-destructive">{validationSubmitError}</p>
-          )}
+          {validationSubmitError && !isAnswered && <p className="text-sm text-destructive">{validationSubmitError}</p>}
 
           {isAnswered && currentResult && (
-            <Alert
-              variant={currentResult.isCorrect ? 'default' : 'destructive'}
-              className={
-                currentResult.isCorrect
-                  ? 'border-green-500/50 bg-green-500/10'
-                  : 'border-destructive/50'
-              }
-            >
-              {currentResult.isCorrect ? (
-                <CheckCircle2 className="h-4 w-4 text-green-500" />
-              ) : (
-                <XCircle className="h-4 w-4 text-destructive" />
-              )}
+            <Alert variant={currentResult.isCorrect ? 'default' : 'destructive'} className={currentResult.isCorrect ? 'border-green-500/50 bg-green-500/10' : 'border-destructive/50'}>
+              {currentResult.isCorrect ? <CheckCircle2 className="h-4 w-4 text-green-500" /> : <XCircle className="h-4 w-4 text-destructive" />}
               <div className="flex justify-between items-start">
                 <div>
-                  <AlertTitle
-                    className={
-                      currentResult.isCorrect
-                        ? 'text-green-400'
-                        : 'text-destructive'
-                    }
-                  >
-                    {currentResult.isCorrect ? 'Correct!' : 'Incorrect'}
-                  </AlertTitle>
+                  <AlertTitle className={currentResult.isCorrect ? 'text-green-400' : 'text-destructive'}>{currentResult.isCorrect ? 'Correct!' : 'Incorrect'}</AlertTitle>
                   <AlertDescription>{currentResult.feedback}</AlertDescription>
                 </div>
                 {!currentResult.isCorrect && (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => setIsAskAiDialogOpen(true)}
-                  >
+                  <Button variant="ghost" size="sm" onClick={() => setIsAskAiDialogOpen(true)}>
                     <HelpCircle className="mr-2 h-4 w-4" />
                     Ask AI
                   </Button>
@@ -1171,30 +795,19 @@ export function TestView({
           <div className="flex w-full sm:w-auto">
             <AlertDialog>
               <AlertDialogTrigger asChild>
-                <Button
-                  variant="destructive"
-                  className="w-full sm:w-auto"
-                  disabled={isLoading}
-                >
+                <Button variant="destructive" className="w-full sm:w-auto" disabled={isLoading}>
                   <LogOut className="mr-2 h-4 w-4" />
                   Quit Test
                 </Button>
               </AlertDialogTrigger>
               <AlertDialogContent>
                 <AlertDialogHeader>
-                  <AlertDialogTitle>
-                    Are you sure you want to quit?
-                  </AlertDialogTitle>
-                  <AlertDialogDescription>
-                    Your progress for the completed questions will be saved and
-                    you will be taken to the results screen.
-                  </AlertDialogDescription>
+                  <AlertDialogTitle>Are you sure you want to quit?</AlertDialogTitle>
+                  <AlertDialogDescription>Your progress for the completed questions will be saved and you will be taken to the results screen.</AlertDialogDescription>
                 </AlertDialogHeader>
                 <AlertDialogFooter>
                   <AlertDialogCancel>Cancel</AlertDialogCancel>
-                  <AlertDialogAction onClick={handleQuit}>
-                    Quit
-                  </AlertDialogAction>
+                  <AlertDialogAction onClick={handleQuit}>Quit</AlertDialogAction>
                 </AlertDialogFooter>
               </AlertDialogContent>
             </AlertDialog>
@@ -1202,41 +815,19 @@ export function TestView({
           <div className="flex w-full sm:w-auto gap-2">
             {!isAnswered ? (
               <>
-                <Button
-                  onClick={handlePrevious}
-                  variant="outline"
-                  className="w-full sm:w-auto"
-                  disabled={isLoading || currentQuestionIndex === 0}
-                >
+                <Button onClick={handlePrevious} variant="outline" className="w-full sm:w-auto" disabled={isLoading || currentQuestionIndex === 0}>
                   Previous
                 </Button>
-                <Button
-                  onClick={handleNextSkip}
-                  variant="outline"
-                  className="w-full sm:w-auto"
-                  disabled={isLoading}
-                >
+                <Button onClick={handleNextSkip} variant="outline" className="w-full sm:w-auto" disabled={isLoading || (!isNextQuestionReady && !isTestFinished)}>
                   Next
                 </Button>
-                <Button
-                  ref={submitButtonRef}
-                  onClick={handleAnswerSubmit}
-                  disabled={isLoading || !userAnswer}
-                  className="w-full sm:w-auto"
-                >
-                  {isLoading && (
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  )}
+                <Button ref={submitButtonRef} onClick={handleAnswerSubmit} disabled={isLoading || !userAnswer} className="w-full sm:w-auto">
+                  {isLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                   {isLoading ? validationSteps[loadingStep] : 'Submit Answer'}
                 </Button>
               </>
             ) : (
-              <Button
-                ref={nextButtonRef}
-                onClick={handleNext}
-                className="w-full sm:w-auto"
-                disabled={isGenerating && !isNextQuestionReady}
-              >
+              <Button ref={nextButtonRef} onClick={handleNext} className="w-full sm:w-auto" disabled={isGenerating && !isNextQuestionReady}>
                 {isGenerating && !isNextQuestionReady ? (
                   <>
                     <Loader2 className="mr-2 h-4 w-4 animate-spin" />

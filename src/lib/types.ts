@@ -26,7 +26,6 @@ export interface TheoryQuestion extends BaseQuestion {
 
 export type Question = MultipleChoiceQuestion | TrueFalseQuestion | FillInTheBlankQuestion | TheoryQuestion;
 
-
 export interface TestSettings {
   questionType: QuestionType;
   numberOfQuestions: number;
@@ -34,6 +33,7 @@ export interface TestSettings {
   timerDuration: number; // in minutes
   difficulty: 'easy' | 'medium' | 'hard';
   questionSource: 'strict' | 'formed';
+  topicFocus?: string;
 }
 
 export interface TestResult {

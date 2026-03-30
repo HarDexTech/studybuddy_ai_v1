@@ -4,5 +4,7 @@ config();
 
 import '@/ai/flows/validate-user-answer.ts';
 import '@/ai/flows/generate-single-test-question.ts';
+import '@/ai/flows/generate-batch-test-questions.ts';
 import '@/ai/flows/answer-document-question.ts';
 import '@/ai/flows/explain-question.ts';
+import '@/ai/flows/extract-topic-section.ts';
