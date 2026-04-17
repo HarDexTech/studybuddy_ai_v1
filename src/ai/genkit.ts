@@ -1,6 +1,10 @@
 import { genkit } from 'genkit';
 import { googleAI } from '@genkit-ai/google-genai';
 
+const DIRECT_CALL_MAX_ATTEMPTS = 2;
+const DIRECT_CALL_TIMEOUT_MS = 10000;
+const FALLBACK_GLOBAL_TIMEOUT_MS = 25000;
+
 // Single Gemini plugin using primary API key
 const geminiPlugin = googleAI({
   apiKey: process.env.GEMINI_API_KEY,
@@ -18,6 +22,12 @@ function sleep(ms: number): Promise<void> {
 function extractErrorText(error: unknown): string {
   const message = (error as any)?.message ?? '';
   return `${message} ${String(error ?? '')}`.toLowerCase();
+}
+
+function createTemporaryUnavailableError(cause?: unknown): Error {
+  const error = new Error('AI_TEMP_UNAVAILABLE: AI service temporarily unavailable. Please retry in a moment.');
+  (error as any).cause = cause;
+  return error;
 }
 
 function getGeminiApiKeys(): string[] {
@@ -46,91 +56,60 @@ function getGeminiApiKeys(): string[] {
 export function isRateLimitError(error: any): boolean {
   const text = extractErrorText(error);
 
-  return (
-    text.includes('rate limit') ||
-    text.includes('quota') ||
-    text.includes('429') ||
-    text.includes('resource exhausted')
-  );
+  return text.includes('rate limit') || text.includes('quota') || text.includes('429') || text.includes('resource exhausted');
 }
 
 export function isTransientGeminiError(error: any): boolean {
   const text = extractErrorText(error);
 
-  return (
-    text.includes('fetch failed') ||
-    text.includes('econnreset') ||
-    text.includes('etimedout') ||
-    text.includes('timed out') ||
-    text.includes('timeout') ||
-    text.includes('eai_again') ||
-    text.includes('enotfound') ||
-    text.includes('service unavailable') ||
-    text.includes('bad gateway') ||
-    text.includes('gateway timeout') ||
-    text.includes('503') ||
-    text.includes('502') ||
-    text.includes('504')
-  );
+  return text.includes('fetch failed') || text.includes('econnreset') || text.includes('etimedout') || text.includes('timed out') || text.includes('timeout') || text.includes('eai_again') || text.includes('enotfound') || text.includes('service unavailable') || text.includes('bad gateway') || text.includes('gateway timeout') || text.includes('503') || text.includes('502') || text.includes('504');
 }
 
 /**
  * Call Gemini API directly with second API key
  */
-async function callGeminiDirectly(
-  model: string,
-  systemInstruction: string,
-  userPrompt: string,
-  apiKey: string,
-): Promise<any> {
+async function callGeminiDirectly(model: string, systemInstruction: string, userPrompt: string, apiKey: string): Promise<any> {
   let lastError: unknown;
+  const startedAt = Date.now();
 
-  for (let attempt = 1; attempt <= 3; attempt++) {
+  for (let attempt = 1; attempt <= DIRECT_CALL_MAX_ATTEMPTS; attempt++) {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 35000);
+    const timeoutId = setTimeout(() => controller.abort(), DIRECT_CALL_TIMEOUT_MS);
 
     try {
-      const response = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          signal: controller.signal,
-          body: JSON.stringify({
-            contents: [
-              {
-                parts: [
-                  {
-                    text: `${systemInstruction}\n\n${userPrompt}`,
-                  },
-                ],
-              },
-            ],
-            generationConfig: {
-              temperature: 0.7,
-              topK: 40,
-              topP: 0.95,
-              maxOutputTokens: 8192,
-            },
-          }),
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
         },
-      );
+        signal: controller.signal,
+        body: JSON.stringify({
+          contents: [
+            {
+              parts: [
+                {
+                  text: `${systemInstruction}\n\n${userPrompt}`,
+                },
+              ],
+            },
+          ],
+          generationConfig: {
+            temperature: 0.7,
+            topK: 40,
+            topP: 0.95,
+            maxOutputTokens: 8192,
+          },
+        }),
+      });
 
       if (!response.ok) {
         const errorText = await response.text();
-        const statusError = new Error(
-          `Gemini API error (${response.status}): ${errorText}`,
-        );
+        const statusError = new Error(`Gemini API error (${response.status}): ${errorText}`);
 
-        if (
-          isRateLimitError(statusError) ||
-          isTransientGeminiError(statusError)
-        ) {
+        if (isRateLimitError(statusError) || isTransientGeminiError(statusError)) {
           lastError = statusError;
-          if (attempt < 3) {
-            await sleep(attempt * 600);
+          if (attempt < DIRECT_CALL_MAX_ATTEMPTS) {
+            await sleep(Math.min(attempt * 400, 1000));
             continue;
           }
         }
@@ -147,8 +126,8 @@ async function callGeminiDirectly(
       throw new Error('Invalid Gemini API response format');
     } catch (error) {
       lastError = error;
-      if (attempt < 3 && isTransientGeminiError(error)) {
-        await sleep(attempt * 600);
+      if (attempt < DIRECT_CALL_MAX_ATTEMPTS && isTransientGeminiError(error)) {
+        await sleep(Math.min(attempt * 400, 1000));
         continue;
       }
       throw error;
@@ -157,9 +136,12 @@ async function callGeminiDirectly(
     }
   }
 
-  throw lastError instanceof Error
-    ? lastError
-    : new Error('Failed direct Gemini call');
+  console.warn('Gemini direct fallback exhausted', {
+    attempts: DIRECT_CALL_MAX_ATTEMPTS,
+    elapsedMs: Date.now() - startedAt,
+  });
+
+  throw lastError instanceof Error ? lastError : new Error('Failed direct Gemini call');
 }
 
 /**
@@ -173,37 +155,40 @@ export async function withDualGeminiFallback<T>(
     parseResponse?: (rawResponse: string) => T;
   },
 ): Promise<T> {
+  const startedAt = Date.now();
+
+  const operationTimeout = new Promise<never>((_, reject) => {
+    setTimeout(() => reject(createTemporaryUnavailableError('Primary operation timeout')), FALLBACK_GLOBAL_TIMEOUT_MS);
+  });
+
   try {
-    return await operation();
+    return await Promise.race([operation(), operationTimeout]);
   } catch (error) {
-    const shouldFallback =
-      isRateLimitError(error) || isTransientGeminiError(error);
+    const shouldFallback = isRateLimitError(error) || isTransientGeminiError(error);
 
     if (!shouldFallback || !fallbackParams) {
-      throw error;
+      throw createTemporaryUnavailableError(error);
     }
 
     const keys = getGeminiApiKeys();
     if (keys.length === 0) {
-      throw error;
+      throw createTemporaryUnavailableError(error);
     }
 
     const primary = process.env.GEMINI_API_KEY?.trim();
-    const orderedKeys = [
-      ...keys.filter((key) => key !== primary),
-      ...keys.filter((key) => key === primary),
-    ];
+    const orderedKeys = [...keys.filter((key) => key !== primary), ...keys.filter((key) => key === primary)];
 
     let lastFallbackError: unknown = error;
+    const maxKeysToTry = Math.min(orderedKeys.length, 2);
 
-    for (const key of orderedKeys) {
+    for (let index = 0; index < maxKeysToTry; index++) {
+      const key = orderedKeys[index];
+      if (Date.now() - startedAt >= FALLBACK_GLOBAL_TIMEOUT_MS) {
+        break;
+      }
+
       try {
-        const rawResponse = await callGeminiDirectly(
-          'gemini-2.5-flash',
-          fallbackParams.systemInstruction,
-          fallbackParams.userPrompt,
-          key,
-        );
+        const rawResponse = await callGeminiDirectly('gemini-2.5-flash', fallbackParams.systemInstruction, fallbackParams.userPrompt, key);
 
         if (fallbackParams.parseResponse) {
           return fallbackParams.parseResponse(rawResponse);
@@ -212,9 +197,16 @@ export async function withDualGeminiFallback<T>(
         return rawResponse as T;
       } catch (fallbackError) {
         lastFallbackError = fallbackError;
+        console.warn('Gemini fallback key failed', {
+          keyIndex: index + 1,
+          totalKeysTried: maxKeysToTry,
+          elapsedMs: Date.now() - startedAt,
+          transient: isTransientGeminiError(fallbackError),
+          rateLimited: isRateLimitError(fallbackError),
+        });
       }
     }
 
-    throw lastFallbackError;
+    throw createTemporaryUnavailableError(lastFallbackError);
   }
 }

@@ -1,37 +1,108 @@
-'use client';
+"use client";
 
-import { useState, useRef, useEffect } from 'react';
-import * as pdfjs from 'pdfjs-dist';
-import mammoth from 'mammoth';
-import JSZip from 'jszip';
-import { generateBatchTestQuestions } from '@/ai/flows/generate-batch-test-questions';
-import { extractTopicSection } from '@/ai/flows/extract-topic-section';
-import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
-import { Input } from '@/components/ui/input';
-import { Textarea } from '@/components/ui/textarea';
-import { Label } from '@/components/ui/label';
-import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Switch } from '@/components/ui/switch';
-import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
-import { Progress } from '@/components/ui/progress';
-import { useToast } from '@/hooks/use-toast';
-import { UploadCloud, ListChecks, Baseline, MessageSquare, Loader2, CheckSquare, Timer, BrainCircuit, Brain, BrainCog, FileText, FileJson, FileType, History, AlertTriangle, Trash2, X } from 'lucide-react';
-import type { TestSettings, Question, CachedDocument } from '@/lib/types';
-import { cn } from '@/lib/utils';
-import { getRecentDocuments, addRecentDocument, removeRecentDocument, clearAllRecentDocuments } from '@/lib/storage';
+import { useState, useRef, useEffect } from "react";
+import * as pdfjs from "pdfjs-dist";
+import mammoth from "mammoth";
+import JSZip from "jszip";
+import { generateBatchTestQuestions } from "@/ai/flows/generate-batch-test-questions";
+import { extractTopicSection } from "@/ai/flows/extract-topic-section";
+import { Button } from "@/components/ui/button";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardFooter,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import { Label } from "@/components/ui/label";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
+import {
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Progress } from "@/components/ui/progress";
+import { useToast } from "@/hooks/use-toast";
+import {
+  UploadCloud,
+  ListChecks,
+  Loader2,
+  Timer,
+  BrainCircuit,
+  Brain,
+  BrainCog,
+  FileText,
+  FileJson,
+  History,
+  AlertTriangle,
+  Trash2,
+  X,
+} from "lucide-react";
+import type {
+  TestSettings,
+  Question,
+  CachedDocument,
+  QuestionType,
+} from "@/lib/types";
+import { cn, pickRandomDocumentChunk } from "@/lib/utils";
+import {
+  getRecentDocuments,
+  addRecentDocument,
+  removeRecentDocument,
+  clearAllRecentDocuments,
+} from "@/lib/storage";
 
 type UploadViewProps = {
-  onDocumentUploaded: (documentText: string, file: { name: string; type: string; size: number }) => void;
-  onTestGenerated: (questions: Question[], settings: TestSettings, effectiveDocumentText: string) => void;
+  onDocumentUploaded: (
+    documentText: string,
+    file: { name: string; type: string; size: number },
+  ) => void;
+  onTestGenerated: (
+    questions: Question[],
+    settings: TestSettings,
+    effectiveDocumentText: string,
+  ) => void;
   existingDocument?: {
     text: string;
     file: { name: string; type: string; size: number };
   } | null;
+  preloadActivationId?: number;
+  sharedPreload?: PreloadEntry | null;
+  sharedPreloadStatus?: PreloadStatus;
+  onSharedPreloadChange?: (
+    entry: PreloadEntry | null,
+    status: PreloadStatus,
+  ) => void;
 };
 
-const parsingSteps = ['Analyzing document...', 'Extracting text...', 'Almost ready...'];
+const parsingSteps = [
+  "Analyzing document...",
+  "Extracting text...",
+  "Almost ready...",
+];
 
 const INITIAL_BATCH_SIZE = 5;
 const MIN_QUESTIONS = 5;
@@ -40,6 +111,8 @@ const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
 const WARNING_THRESHOLD = 20;
 const INITIAL_GENERATION_TIMEOUT = 60000;
 const INITIAL_GENERATION_MAX_RETRIES = 1;
+const PRELOAD_DELAY_MS = 1500;
+const PRELOAD_CACHE_TTL_MS = 5 * 60 * 1000;
 const OCR_TEXT_MIN_LENGTH = 200;
 const OCR_TEXT_PER_PAGE_MIN = 40;
 const OCR_PAGE_RENDER_SCALE = 3;
@@ -47,11 +120,33 @@ const OCR_PAGE_RENDER_SCALE = 3;
 const FALLBACK_WORD_MIN_LENGTH = 5;
 const FALLBACK_SENTENCE_MIN_LENGTH = 30;
 
+const AVAILABLE_QUESTION_TYPES: QuestionType[] = [
+  "multiple choice",
+  "fill-in-the-blank",
+  "theory",
+  "true or false",
+];
+
+type PreloadStatus =
+  | "idle"
+  | "scheduled"
+  | "preloading"
+  | "ready"
+  | "cache-hit"
+  | "error";
+
+type PreloadEntry = {
+  key: string;
+  createdAt: number;
+  questions: Question[];
+  effectiveDocumentText: string;
+};
+
 const normalizeQuestionText = (value: string) =>
   value
     .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, ' ')
-    .replace(/\s+/g, ' ')
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
     .trim();
 
 const uniqueQuestions = (questions: Question[]) => {
@@ -77,7 +172,7 @@ const shuffleArray = <T,>(array: T[]) => {
 
 const splitIntoSentences = (text: string) =>
   text
-    .replace(/\s+/g, ' ')
+    .replace(/\s+/g, " ")
     .split(/(?<=[.!?])\s+/)
     .map((sentence) => sentence.trim())
     .filter((sentence) => sentence.length >= FALLBACK_SENTENCE_MIN_LENGTH);
@@ -86,7 +181,9 @@ const extractWordPool = (text: string) => {
   const words = text.toLowerCase().match(/[a-zA-Z][a-zA-Z-]{4,}/g);
 
   if (!words) return [];
-  return Array.from(new Set(words.filter((word) => word.length >= FALLBACK_WORD_MIN_LENGTH)));
+  return Array.from(
+    new Set(words.filter((word) => word.length >= FALLBACK_WORD_MIN_LENGTH)),
+  );
 };
 
 const pickBlankWord = (sentence: string) => {
@@ -95,11 +192,21 @@ const pickBlankWord = (sentence: string) => {
   return candidates[Math.floor(Math.random() * candidates.length)];
 };
 
-const makeMultipleChoiceQuestion = (sentence: string, wordPool: string[]): Question => {
-  const correctAnswer = pickBlankWord(sentence) || 'information';
-  const prompt = sentence.replace(new RegExp(`\\b${correctAnswer}\\b`, 'i'), '_____');
+const makeMultipleChoiceQuestion = (
+  sentence: string,
+  wordPool: string[],
+): Question => {
+  const correctAnswer = pickBlankWord(sentence) || "information";
+  const prompt = sentence.replace(
+    new RegExp(`\\b${correctAnswer}\\b`, "i"),
+    "_____",
+  );
 
-  const distractors = shuffleArray(wordPool.filter((word) => word.toLowerCase() !== correctAnswer.toLowerCase())).slice(0, 3);
+  const distractors = shuffleArray(
+    wordPool.filter(
+      (word) => word.toLowerCase() !== correctAnswer.toLowerCase(),
+    ),
+  ).slice(0, 3);
 
   while (distractors.length < 3) {
     distractors.push(`option-${distractors.length + 1}`);
@@ -108,7 +215,7 @@ const makeMultipleChoiceQuestion = (sentence: string, wordPool: string[]): Quest
   const choices = shuffleArray([correctAnswer, ...distractors]);
 
   return {
-    type: 'multiple choice',
+    type: "multiple choice",
     question: `Choose the best word to complete the statement: ${prompt}`,
     choices,
     correctAnswer,
@@ -119,55 +226,69 @@ const makeTrueFalseQuestion = (sentence: string): Question => {
   const isTrue = Math.random() > 0.5;
   if (isTrue) {
     return {
-      type: 'true or false',
+      type: "true or false",
       question: `True or False: ${sentence}`,
       correctAnswer: true,
     };
   }
 
-  const words = sentence.split(' ');
+  const words = sentence.split(" ");
   if (words.length > 6) {
-    words[words.length - 2] = 'not';
+    words[words.length - 2] = "not";
   }
 
   return {
-    type: 'true or false',
-    question: `True or False: ${words.join(' ')}`,
+    type: "true or false",
+    question: `True or False: ${words.join(" ")}`,
     correctAnswer: false,
   };
 };
 
 const makeFillBlankQuestion = (sentence: string): Question => {
-  const blankWord = pickBlankWord(sentence) || 'keyword';
+  const blankWord = pickBlankWord(sentence) || "keyword";
   return {
-    type: 'fill-in-the-blank',
-    question: sentence.replace(new RegExp(`\\b${blankWord}\\b`, 'i'), '_____'),
+    type: "fill-in-the-blank",
+    question: sentence.replace(new RegExp(`\\b${blankWord}\\b`, "i"), "_____"),
   };
 };
 
 const makeTheoryQuestion = (sentence: string): Question => ({
-  type: 'theory',
+  type: "theory",
   question: `Explain this concept from the document in your own words: ${sentence}`,
 });
 
-const generateOfflineFallbackQuestions = (text: string, settings: TestSettings, count: number): Question[] => {
+const generateOfflineFallbackQuestions = (
+  text: string,
+  settings: TestSettings,
+  count: number,
+): Question[] => {
   const sentences = splitIntoSentences(text);
   const wordPool = extractWordPool(text);
 
-  const fallbackSource = sentences.length > 0 ? sentences : ['Summarize the key ideas from this uploaded material.', 'Identify a major concept discussed in this document.', 'Explain one important fact from the document.'];
+  const fallbackSource =
+    sentences.length > 0
+      ? sentences
+      : [
+          "Summarize the key ideas from this uploaded material.",
+          "Identify a major concept discussed in this document.",
+          "Explain one important fact from the document.",
+        ];
 
   const questions: Question[] = [];
-  const orderedTypes: Array<Question['type']> = settings.questionType === 'all' ? ['multiple choice', 'true or false', 'fill-in-the-blank', 'theory'] : [settings.questionType as Question['type']];
+  const orderedTypes: Array<Question["type"]> =
+    settings.questionType.length > 0
+      ? settings.questionType
+      : AVAILABLE_QUESTION_TYPES;
 
   for (let index = 0; index < count; index++) {
     const sentence = fallbackSource[index % fallbackSource.length];
     const targetType = orderedTypes[index % orderedTypes.length];
 
-    if (targetType === 'multiple choice') {
+    if (targetType === "multiple choice") {
       questions.push(makeMultipleChoiceQuestion(sentence, wordPool));
-    } else if (targetType === 'true or false') {
+    } else if (targetType === "true or false") {
       questions.push(makeTrueFalseQuestion(sentence));
-    } else if (targetType === 'fill-in-the-blank') {
+    } else if (targetType === "fill-in-the-blank") {
       questions.push(makeFillBlankQuestion(sentence));
     } else {
       questions.push(makeTheoryQuestion(sentence));
@@ -177,7 +298,11 @@ const generateOfflineFallbackQuestions = (text: string, settings: TestSettings, 
   return uniqueQuestions(questions);
 };
 
-function RecentDocuments({ onSelect }: { onSelect: (doc: CachedDocument) => void }) {
+function RecentDocuments({
+  onSelect,
+}: {
+  onSelect: (doc: CachedDocument) => void;
+}) {
   const [recentDocs, setRecentDocs] = useState<CachedDocument[]>([]);
   const [showAll, setShowAll] = useState(false);
 
@@ -196,12 +321,12 @@ function RecentDocuments({ onSelect }: { onSelect: (doc: CachedDocument) => void
   const docsToRender = showAll ? recentDocs : recentDocs.slice(0, 5);
 
   const formatBytes = (bytes: number, decimals = 2) => {
-    if (bytes === 0) return '0 Bytes';
+    if (bytes === 0) return "0 Bytes";
     const k = 1024;
     const dm = decimals < 0 ? 0 : decimals;
-    const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
+    const sizes = ["Bytes", "KB", "MB", "GB", "TB"];
     const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + " " + sizes[i];
   };
 
   return (
@@ -213,7 +338,12 @@ function RecentDocuments({ onSelect }: { onSelect: (doc: CachedDocument) => void
 
         <AlertDialog>
           <AlertDialogTrigger asChild>
-            <Button type="button" size="sm" variant="outline" className="text-destructive border-destructive/40 hover:bg-destructive/10">
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="text-destructive border-destructive/40 hover:bg-destructive/10"
+            >
               <Trash2 className="w-4 h-4 mr-2" />
               Clear All
             </Button>
@@ -221,7 +351,10 @@ function RecentDocuments({ onSelect }: { onSelect: (doc: CachedDocument) => void
           <AlertDialogContent>
             <AlertDialogHeader>
               <AlertDialogTitle>Clear all recent documents?</AlertDialogTitle>
-              <AlertDialogDescription>This will remove all saved documents. You will need to re-upload them to use them again.</AlertDialogDescription>
+              <AlertDialogDescription>
+                This will remove all saved documents. You will need to re-upload
+                them to use them again.
+              </AlertDialogDescription>
             </AlertDialogHeader>
             <AlertDialogFooter>
               <AlertDialogCancel>Cancel</AlertDialogCancel>
@@ -241,7 +374,11 @@ function RecentDocuments({ onSelect }: { onSelect: (doc: CachedDocument) => void
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         {docsToRender.map((doc) => (
-          <Card key={doc.id} className="group relative hover:bg-muted/50 transition-colors cursor-pointer" onClick={() => onSelect(doc)}>
+          <Card
+            key={doc.id}
+            className="group relative hover:bg-muted/50 transition-colors cursor-pointer"
+            onClick={() => onSelect(doc)}
+          >
             <button
               type="button"
               aria-label={`Remove ${doc.name}`}
@@ -258,7 +395,9 @@ function RecentDocuments({ onSelect }: { onSelect: (doc: CachedDocument) => void
               <FileText className="w-8 h-8 text-primary flex-shrink-0" />
               <div className="flex-grow overflow-hidden">
                 <p className="font-semibold truncate">{doc.name}</p>
-                <p className="text-sm text-muted-foreground">{formatBytes(doc.size)}</p>
+                <p className="text-sm text-muted-foreground">
+                  {formatBytes(doc.size)}
+                </p>
               </div>
             </CardContent>
           </Card>
@@ -267,8 +406,13 @@ function RecentDocuments({ onSelect }: { onSelect: (doc: CachedDocument) => void
 
       {recentDocs.length > 5 && (
         <div className="mt-3 flex justify-end">
-          <Button type="button" variant="ghost" size="sm" onClick={() => setShowAll((prev) => !prev)}>
-            {showAll ? 'Show Less' : `Show All (${recentDocs.length})`}
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={() => setShowAll((prev) => !prev)}
+          >
+            {showAll ? "Show Less" : `Show All (${recentDocs.length})`}
           </Button>
         </div>
       )}
@@ -278,40 +422,222 @@ function RecentDocuments({ onSelect }: { onSelect: (doc: CachedDocument) => void
           <span className="w-full border-t" />
         </div>
         <div className="relative flex justify-center text-xs uppercase">
-          <span className="bg-background px-2 text-muted-foreground">Or upload a new file</span>
+          <span className="bg-background px-2 text-muted-foreground">
+            Or upload a new file
+          </span>
         </div>
       </div>
     </div>
   );
 }
 
-export function UploadView({ onDocumentUploaded, onTestGenerated, existingDocument }: UploadViewProps) {
+export function UploadView({
+  onDocumentUploaded,
+  onTestGenerated,
+  existingDocument,
+  preloadActivationId = 0,
+  sharedPreload = null,
+  sharedPreloadStatus = "idle",
+  onSharedPreloadChange,
+}: UploadViewProps) {
   const { toast } = useToast();
-  const [file, setFile] = useState<File | null>(existingDocument?.file ? new File([], existingDocument.file.name) : null);
+  const [file, setFile] = useState<File | null>(
+    existingDocument?.file ? new File([], existingDocument.file.name) : null,
+  );
 
   const [settings, setSettings] = useState<TestSettings>({
-    questionType: 'multiple choice',
+    questionType: [...AVAILABLE_QUESTION_TYPES],
     numberOfQuestions: 10,
     timerEnabled: false,
     timerDuration: 10,
-    difficulty: 'medium',
-    questionSource: 'strict',
-    topicFocus: '',
+    difficulty: "medium",
+    questionSource: "strict",
+    topicFocus: "",
   });
 
   const [isLoading, setIsLoading] = useState(false);
-  const [loadingMessage, setLoadingMessage] = useState('');
+  const [loadingMessage, setLoadingMessage] = useState("");
   const [isParsing, setIsParsing] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const [parsingProgress, setParsingProgress] = useState<number | null>(null);
   const [generationProgress, setGenerationProgress] = useState(0);
-  const [manualText, setManualText] = useState('');
+  const [preloadStatus, setPreloadStatus] =
+    useState<PreloadStatus>(sharedPreloadStatus);
+  const [preloadedEntry, setPreloadedEntry] = useState<PreloadEntry | null>(
+    sharedPreload,
+  );
+  const [manualText, setManualText] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const preloadVersionRef = useRef(0);
 
   const isTestCreationMode = !!existingDocument;
 
   // Question count validation
-  const questionCountError = settings.numberOfQuestions < MIN_QUESTIONS ? `Minimum ${MIN_QUESTIONS} questions required` : settings.numberOfQuestions > MAX_QUESTIONS ? `Maximum ${MAX_QUESTIONS} questions allowed` : null;
+  const questionCountError =
+    settings.numberOfQuestions < MIN_QUESTIONS
+      ? `Minimum ${MIN_QUESTIONS} questions required`
+      : settings.numberOfQuestions > MAX_QUESTIONS
+        ? `Maximum ${MAX_QUESTIONS} questions allowed`
+        : null;
+  const questionTypeError =
+    settings.questionType.length === 0
+      ? "Select at least one question type"
+      : null;
+  const questionTypeOptions: Array<{ value: QuestionType; label: string }> = [
+    { value: "multiple choice", label: "Multiple Choice" },
+    { value: "fill-in-the-blank", label: "Fill-in-the-Blank" },
+    { value: "theory", label: "Open-Ended" },
+    { value: "true or false", label: "True or False" },
+  ];
+
+  const selectedQuestionTypesLabel =
+    settings.questionType.length === 0
+      ? "Select question types"
+      : settings.questionType.length === AVAILABLE_QUESTION_TYPES.length
+        ? "All question types"
+        : `${settings.questionType.length} selected`;
+
+  const getPreloadKey = () => {
+    if (!existingDocument) {
+      return "";
+    }
+
+    const normalizedTopicFocus = (settings.topicFocus || "")
+      .trim()
+      .toLowerCase();
+    const sortedTypes = [...settings.questionType].sort();
+    const documentSignature = `${existingDocument.file.name}:${existingDocument.text.length}:${existingDocument.text.slice(0, 120)}`;
+
+    return JSON.stringify({
+      documentSignature,
+      questionTypes: sortedTypes,
+      topicFocus: normalizedTopicFocus,
+      difficulty: settings.difficulty,
+      questionSource: settings.questionSource,
+    });
+  };
+
+  const currentPreloadKey = getPreloadKey();
+
+  const syncPreloadState = (
+    entry: PreloadEntry | null,
+    status: PreloadStatus,
+  ) => {
+    setPreloadedEntry(entry);
+    setPreloadStatus(status);
+    onSharedPreloadChange?.(entry, status);
+  };
+
+  useEffect(() => {
+    if (!sharedPreload || sharedPreload.key !== currentPreloadKey) {
+      return;
+    }
+
+    setPreloadedEntry(sharedPreload);
+    setPreloadStatus(sharedPreloadStatus);
+  }, [sharedPreload, sharedPreloadStatus, currentPreloadKey]);
+
+  useEffect(() => {
+    if (
+      !isTestCreationMode ||
+      preloadActivationId === 0 ||
+      !existingDocument ||
+      settings.questionType.length === 0
+    ) {
+      return;
+    }
+
+    const now = Date.now();
+    const cached =
+      sharedPreload && sharedPreload.key === currentPreloadKey
+        ? sharedPreload
+        : null;
+
+    if (cached && now - cached.createdAt <= PRELOAD_CACHE_TTL_MS) {
+      syncPreloadState(cached, "cache-hit");
+      return;
+    }
+
+    syncPreloadState(null, "scheduled");
+
+    let isDisposed = false;
+    const preloadVersion = ++preloadVersionRef.current;
+
+    const timer = setTimeout(async () => {
+      if (isDisposed || preloadVersion !== preloadVersionRef.current) {
+        return;
+      }
+
+      syncPreloadState(null, "preloading");
+
+      try {
+        let effectiveDocumentText = existingDocument.text;
+
+        if (settings.topicFocus?.trim()) {
+          const extracted = await extractTopicSection({
+            documentContent: existingDocument.text,
+            topicFocus: settings.topicFocus.trim(),
+          });
+
+          if (isDisposed || preloadVersion !== preloadVersionRef.current) {
+            return;
+          }
+
+          effectiveDocumentText =
+            extracted.extractedText?.trim() || existingDocument.text;
+        }
+
+        const result = await generateBatchTestQuestions({
+          documentContent: pickRandomDocumentChunk(effectiveDocumentText),
+          questionTypes: settings.questionType,
+          difficulty: settings.difficulty,
+          questionSource: settings.questionSource,
+          existingQuestions: [],
+          batchSize: INITIAL_BATCH_SIZE,
+        });
+
+        if (isDisposed || preloadVersion !== preloadVersionRef.current) {
+          return;
+        }
+
+        const deduped = uniqueQuestions(result.questions as Question[]);
+        if (deduped.length === 0) {
+          throw new Error("No preload questions generated");
+        }
+
+        const entry: PreloadEntry = {
+          key: currentPreloadKey,
+          createdAt: Date.now(),
+          questions: deduped,
+          effectiveDocumentText,
+        };
+
+        syncPreloadState(entry, "ready");
+      } catch (error) {
+        if (isDisposed || preloadVersion !== preloadVersionRef.current) {
+          return;
+        }
+
+        console.warn("Preload failed", error);
+        syncPreloadState(null, "error");
+      }
+    }, PRELOAD_DELAY_MS);
+
+    return () => {
+      isDisposed = true;
+      clearTimeout(timer);
+    };
+  }, [
+    isTestCreationMode,
+    preloadActivationId,
+    existingDocument,
+    sharedPreload,
+    currentPreloadKey,
+    settings.topicFocus,
+    settings.questionType,
+    settings.difficulty,
+    settings.questionSource,
+  ]);
 
   // Show warning for 20+ questions
   const showWarning = settings.numberOfQuestions >= WARNING_THRESHOLD;
@@ -322,12 +648,12 @@ export function UploadView({ onDocumentUploaded, onTestGenerated, existingDocume
 
     const handleBeforeUnload = (e: BeforeUnloadEvent) => {
       e.preventDefault();
-      e.returnValue = 'Questions are being generated. Leave anyway?';
+      e.returnValue = "Questions are being generated. Leave anyway?";
       return e.returnValue;
     };
 
-    window.addEventListener('beforeunload', handleBeforeUnload);
-    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
   }, [isLoading, isTestCreationMode]);
 
   useEffect(() => {
@@ -349,44 +675,53 @@ export function UploadView({ onDocumentUploaded, onTestGenerated, existingDocume
   }, [isParsing]);
 
   const isLikelyScannedPdf = (text: string, pageCount: number) => {
-    const normalizedLength = text.replace(/\s+/g, ' ').trim().length;
+    const normalizedLength = text.replace(/\s+/g, " ").trim().length;
     const perPageLength = normalizedLength / Math.max(pageCount, 1);
 
-    return normalizedLength < OCR_TEXT_MIN_LENGTH || perPageLength < OCR_TEXT_PER_PAGE_MIN;
+    return (
+      normalizedLength < OCR_TEXT_MIN_LENGTH ||
+      perPageLength < OCR_TEXT_PER_PAGE_MIN
+    );
   };
 
   const extractNativePdfText = async (pdf: pdfjs.PDFDocumentProxy) => {
-    let text = '';
+    let text = "";
 
     for (let i = 1; i <= pdf.numPages; i++) {
       const progress = Math.round((i / Math.max(pdf.numPages, 1)) * 100);
       setParsingProgress(progress);
-      setLoadingMessage(`Extracting text from page ${i}/${pdf.numPages} (${progress}%)...`);
+      setLoadingMessage(
+        `Extracting text from page ${i}/${pdf.numPages} (${progress}%)...`,
+      );
       const page = await pdf.getPage(i);
       const content = await page.getTextContent();
-      text += content.items.map((item) => ('str' in item ? item.str : '')).join(' ') + '\n';
+      text +=
+        content.items.map((item) => ("str" in item ? item.str : "")).join(" ") +
+        "\n";
     }
 
     return text;
   };
 
   const runPdfOcr = async (pdf: pdfjs.PDFDocumentProxy) => {
-    const { createWorker } = await import('tesseract.js');
-    const worker = await createWorker('eng');
-    let ocrText = '';
+    const { createWorker } = await import("tesseract.js");
+    const worker = await createWorker("eng");
+    let ocrText = "";
 
     try {
       for (let i = 1; i <= pdf.numPages; i++) {
         const progress = Math.round((i / Math.max(pdf.numPages, 1)) * 100);
         setParsingProgress(progress);
-        setLoadingMessage(`Running OCR on page ${i}/${pdf.numPages} (${progress}%)...`);
+        setLoadingMessage(
+          `Running OCR on page ${i}/${pdf.numPages} (${progress}%)...`,
+        );
         const page = await pdf.getPage(i);
         const viewport = page.getViewport({ scale: OCR_PAGE_RENDER_SCALE });
-        const canvas = document.createElement('canvas');
-        const context = canvas.getContext('2d');
+        const canvas = document.createElement("canvas");
+        const context = canvas.getContext("2d");
 
         if (!context) {
-          throw new Error('Failed to initialize canvas for OCR.');
+          throw new Error("Failed to initialize canvas for OCR.");
         }
 
         canvas.width = Math.ceil(viewport.width);
@@ -397,7 +732,7 @@ export function UploadView({ onDocumentUploaded, onTestGenerated, existingDocume
         const {
           data: { text },
         } = await worker.recognize(canvas);
-        ocrText += `${text || ''}\n`;
+        ocrText += `${text || ""}\n`;
       }
     } finally {
       await worker.terminate();
@@ -411,7 +746,11 @@ export function UploadView({ onDocumentUploaded, onTestGenerated, existingDocume
 
     const handlePaste = async (event: ClipboardEvent) => {
       const activeElement = document.activeElement;
-      const isTypingTarget = activeElement instanceof HTMLInputElement || activeElement instanceof HTMLTextAreaElement || activeElement instanceof HTMLSelectElement || activeElement?.getAttribute('contenteditable') === 'true';
+      const isTypingTarget =
+        activeElement instanceof HTMLInputElement ||
+        activeElement instanceof HTMLTextAreaElement ||
+        activeElement instanceof HTMLSelectElement ||
+        activeElement?.getAttribute("contenteditable") === "true";
 
       if (isTypingTarget) return;
 
@@ -419,15 +758,20 @@ export function UploadView({ onDocumentUploaded, onTestGenerated, existingDocume
       if (!items || items.length === 0) return;
 
       const clipboardItems = Array.from(items);
-      const pdfItem = clipboardItems.find((item) => item.kind === 'file' && item.type === 'application/pdf');
+      const pdfItem = clipboardItems.find(
+        (item) => item.kind === "file" && item.type === "application/pdf",
+      );
 
       if (!pdfItem) {
-        const hasOtherFile = clipboardItems.some((item) => item.kind === 'file');
+        const hasOtherFile = clipboardItems.some(
+          (item) => item.kind === "file",
+        );
         if (hasOtherFile) {
           toast({
-            variant: 'destructive',
-            title: 'Paste Supports PDF Only',
-            description: 'Please paste a PDF document or upload another file type.',
+            variant: "destructive",
+            title: "Paste Supports PDF Only",
+            description:
+              "Please paste a PDF document or upload another file type.",
           });
         }
         return;
@@ -438,13 +782,17 @@ export function UploadView({ onDocumentUploaded, onTestGenerated, existingDocume
 
       event.preventDefault();
 
-      const normalizedFile = new File([pastedFile], pastedFile.name || `pasted-scan-${Date.now()}.pdf`, { type: 'application/pdf' });
+      const normalizedFile = new File(
+        [pastedFile],
+        pastedFile.name || `pasted-scan-${Date.now()}.pdf`,
+        { type: "application/pdf" },
+      );
 
       await handleFileChange(normalizedFile);
     };
 
-    window.addEventListener('paste', handlePaste);
-    return () => window.removeEventListener('paste', handlePaste);
+    window.addEventListener("paste", handlePaste);
+    return () => window.removeEventListener("paste", handlePaste);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isTestCreationMode, toast]);
 
@@ -452,9 +800,12 @@ export function UploadView({ onDocumentUploaded, onTestGenerated, existingDocume
     if (!selectedFile) return;
 
     if (selectedFile.size > MAX_FILE_SIZE) {
-      handleError(`File size exceeds the 50MB limit. Please upload a smaller document.`, 'File Too Large');
+      handleError(
+        `File size exceeds the 50MB limit. Please upload a smaller document.`,
+        "File Too Large",
+      );
       if (fileInputRef.current) {
-        fileInputRef.current.value = '';
+        fileInputRef.current.value = "";
       }
       return;
     }
@@ -468,49 +819,64 @@ export function UploadView({ onDocumentUploaded, onTestGenerated, existingDocume
     arrayBufferReader.readAsArrayBuffer(selectedFile);
 
     try {
-      const arrayBufferResult = await new Promise<ArrayBuffer>((resolve, reject) => {
-        arrayBufferReader.onload = (e) => resolve(e.target?.result as ArrayBuffer);
-        arrayBufferReader.onerror = reject;
-      });
+      const arrayBufferResult = await new Promise<ArrayBuffer>(
+        (resolve, reject) => {
+          arrayBufferReader.onload = (e) =>
+            resolve(e.target?.result as ArrayBuffer);
+          arrayBufferReader.onerror = reject;
+        },
+      );
 
-      let text = '';
-      if (selectedFile.type === 'application/pdf') {
+      let text = "";
+      if (selectedFile.type === "application/pdf") {
         pdfjs.GlobalWorkerOptions.workerSrc = `//unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
-        const pdf = await pdfjs.getDocument({ data: arrayBufferResult }).promise;
+        const pdf = await pdfjs.getDocument({ data: arrayBufferResult })
+          .promise;
 
         setParsingProgress(0);
-        setLoadingMessage('Detecting if PDF is scanned or selectable text...');
+        setLoadingMessage("Detecting if PDF is scanned or selectable text...");
         const nativeText = await extractNativePdfText(pdf);
 
         if (isLikelyScannedPdf(nativeText, pdf.numPages)) {
-          setLoadingMessage('Scanned PDF detected. Starting OCR...');
+          setLoadingMessage("Scanned PDF detected. Starting OCR...");
           const ocrText = await runPdfOcr(pdf);
           text = ocrText.trim() || nativeText;
         } else {
           text = nativeText;
         }
-      } else if (selectedFile.type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') {
+      } else if (
+        selectedFile.type ===
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+      ) {
         const result = await mammoth.extractRawText({
           arrayBuffer: arrayBufferResult,
         });
         text = result.value;
-      } else if (selectedFile.type === 'application/vnd.openxmlformats-officedocument.presentationml.presentation') {
+      } else if (
+        selectedFile.type ===
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+      ) {
         const zip = await JSZip.loadAsync(arrayBufferResult);
         const slideTexts: string[] = [];
         const slidePromises: Promise<void>[] = [];
 
-        zip.folder('ppt/slides')?.forEach((relativePath, file) => {
-          if (relativePath.endsWith('.xml')) {
-            const promise = file.async('string').then((xmlContent) => {
+        zip.folder("ppt/slides")?.forEach((relativePath, file) => {
+          if (relativePath.endsWith(".xml")) {
+            const promise = file.async("string").then((xmlContent) => {
               const parser = new DOMParser();
-              const xmlDoc = parser.parseFromString(xmlContent, 'application/xml');
-              const textNodes = xmlDoc.getElementsByTagName('a:t');
-              let slideText = '';
+              const xmlDoc = parser.parseFromString(
+                xmlContent,
+                "application/xml",
+              );
+              const textNodes = xmlDoc.getElementsByTagName("a:t");
+              let slideText = "";
               for (let i = 0; i < textNodes.length; i++) {
-                slideText += textNodes[i].textContent + ' ';
+                slideText += textNodes[i].textContent + " ";
               }
               const slideNumMatch = relativePath.match(/slide(\d+)\.xml/);
-              const slideNum = slideNumMatch ? parseInt(slideNumMatch[1], 10) : 999;
+              const slideNum = slideNumMatch
+                ? parseInt(slideNumMatch[1], 10)
+                : 999;
               slideTexts.push({ text: slideText.trim(), num: slideNum } as any);
             });
             slidePromises.push(promise);
@@ -522,16 +888,24 @@ export function UploadView({ onDocumentUploaded, onTestGenerated, existingDocume
         text = (slideTexts as any[])
           .sort((a, b) => a.num - b.num)
           .map((s) => s.text)
-          .join('\n\n');
-      } else if (selectedFile.type === 'text/plain' || selectedFile.type.startsWith('text/')) {
+          .join("\n\n");
+      } else if (
+        selectedFile.type === "text/plain" ||
+        selectedFile.type.startsWith("text/")
+      ) {
         text = new TextDecoder().decode(arrayBufferResult);
       } else {
-        handleError('Unsupported file type. Please use PDF, DOCX, PPTX, or a plain text file.');
+        handleError(
+          "Unsupported file type. Please use PDF, DOCX, PPTX, or a plain text file.",
+        );
         return;
       }
 
       if (!text.trim()) {
-        handleError('Could not extract any text from the document. It might be empty or scanned as an image.', 'No Text Found');
+        handleError(
+          "Could not extract any text from the document. It might be empty or scanned as an image.",
+          "No Text Found",
+        );
         return;
       }
 
@@ -549,8 +923,8 @@ export function UploadView({ onDocumentUploaded, onTestGenerated, existingDocume
 
       onDocumentUploaded(text, fileInfo);
     } catch (error) {
-      console.error('Parsing error:', error);
-      handleError('Failed to parse the document.');
+      console.error("Parsing error:", error);
+      handleError("Failed to parse the document.");
     } finally {
       setIsParsing(false);
       setParsingProgress(null);
@@ -570,9 +944,9 @@ export function UploadView({ onDocumentUploaded, onTestGenerated, existingDocume
 
     if (!trimmedText) {
       toast({
-        variant: 'destructive',
-        title: 'No Text Provided',
-        description: 'Please paste or type some text to continue.',
+        variant: "destructive",
+        title: "No Text Provided",
+        description: "Please paste or type some text to continue.",
       });
       return;
     }
@@ -584,7 +958,7 @@ export function UploadView({ onDocumentUploaded, onTestGenerated, existingDocume
     addRecentDocument({
       id: `pasted-text-${now}`,
       name: pastedDocumentName,
-      type: 'text/plain',
+      type: "text/plain",
       size: pastedDocumentSize,
       lastModified: now,
       text: trimmedText,
@@ -592,21 +966,21 @@ export function UploadView({ onDocumentUploaded, onTestGenerated, existingDocume
 
     onDocumentUploaded(trimmedText, {
       name: pastedDocumentName,
-      type: 'text/plain',
+      type: "text/plain",
       size: pastedDocumentSize,
     });
   };
 
-  const handleError = (message: string, title: string = 'Error') => {
-    toast({ variant: 'destructive', title: title, description: message });
+  const handleError = (message: string, title: string = "Error") => {
+    toast({ variant: "destructive", title: title, description: message });
     setIsLoading(false);
     setIsParsing(false);
     setParsingProgress(null);
     setGenerationProgress(0);
-    if (title !== 'AI Service Unavailable' && !isTestCreationMode) {
+    if (title !== "AI Service Unavailable" && !isTestCreationMode) {
       setFile(null);
       if (fileInputRef.current) {
-        fileInputRef.current.value = '';
+        fileInputRef.current.value = "";
       }
     }
   };
@@ -614,19 +988,32 @@ export function UploadView({ onDocumentUploaded, onTestGenerated, existingDocume
   const handleGenerateTest = async () => {
     if (!existingDocument) {
       toast({
-        variant: 'destructive',
-        title: 'No document context',
-        description: 'Something went wrong. Please upload the document again.',
+        variant: "destructive",
+        title: "No document context",
+        description: "Something went wrong. Please upload the document again.",
       });
       return;
     }
 
     // Validate question count
-    if (settings.numberOfQuestions < MIN_QUESTIONS || settings.numberOfQuestions > MAX_QUESTIONS) {
+    if (
+      settings.numberOfQuestions < MIN_QUESTIONS ||
+      settings.numberOfQuestions > MAX_QUESTIONS
+    ) {
       toast({
-        variant: 'destructive',
-        title: 'Invalid Question Count',
-        description: questionCountError || 'Please enter a valid number of questions.',
+        variant: "destructive",
+        title: "Invalid Question Count",
+        description:
+          questionCountError || "Please enter a valid number of questions.",
+      });
+      return;
+    }
+
+    if (settings.questionType.length === 0) {
+      toast({
+        variant: "destructive",
+        title: "No Question Type Selected",
+        description: "Select at least one question type to generate a test.",
       });
       return;
     }
@@ -638,37 +1025,61 @@ export function UploadView({ onDocumentUploaded, onTestGenerated, existingDocume
 
     try {
       let effectiveDocumentText = existingDocument.text;
+      const activePreload =
+        preloadedEntry && preloadedEntry.key === currentPreloadKey
+          ? preloadedEntry
+          : null;
+      let result: { questions: Question[] } | null = null;
 
-      if (settings.topicFocus?.trim()) {
-        setLoadingMessage('Finding relevant section...');
+      if (activePreload) {
+        effectiveDocumentText = activePreload.effectiveDocumentText;
+        result = { questions: activePreload.questions };
+      }
+
+      if (!result && settings.topicFocus?.trim()) {
+        setLoadingMessage("Finding relevant section...");
         const extracted = await extractTopicSection({
           documentContent: existingDocument.text,
           topicFocus: settings.topicFocus.trim(),
         });
 
-        effectiveDocumentText = extracted.extractedText?.trim() || existingDocument.text;
+        effectiveDocumentText =
+          extracted.extractedText?.trim() || existingDocument.text;
       }
 
       let attempt = 0;
-      let result: { questions: Question[] } | null = null;
 
       while (attempt <= INITIAL_GENERATION_MAX_RETRIES && !result) {
         try {
-          const timeoutPromise = new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Initial generation timeout')), INITIAL_GENERATION_TIMEOUT));
+          const timeoutPromise = new Promise<never>((_, reject) =>
+            setTimeout(
+              () => reject(new Error("Initial generation timeout")),
+              INITIAL_GENERATION_TIMEOUT,
+            ),
+          );
 
           const generationPromise = generateBatchTestQuestions({
-            documentContent: effectiveDocumentText,
-            questionType: settings.questionType,
+            documentContent: pickRandomDocumentChunk(effectiveDocumentText),
+            questionTypes: settings.questionType,
             difficulty: settings.difficulty,
             questionSource: settings.questionSource,
             existingQuestions: [],
             batchSize: INITIAL_BATCH_SIZE,
           });
 
-          result = (await Promise.race([generationPromise, timeoutPromise])) as { questions: Question[] };
+          result = (await Promise.race([
+            generationPromise,
+            timeoutPromise,
+          ])) as { questions: Question[] };
         } catch (error) {
-          const errorMessage = ((error as Error)?.message || '').toLowerCase();
-          const isRetryable = errorMessage.includes('timeout') || errorMessage.includes('fetch') || errorMessage.includes('network') || errorMessage.includes('503') || errorMessage.includes('server') || errorMessage.includes('overloaded');
+          const errorMessage = ((error as Error)?.message || "").toLowerCase();
+          const isRetryable =
+            errorMessage.includes("timeout") ||
+            errorMessage.includes("fetch") ||
+            errorMessage.includes("network") ||
+            errorMessage.includes("503") ||
+            errorMessage.includes("server") ||
+            errorMessage.includes("overloaded");
 
           if (!isRetryable || attempt >= INITIAL_GENERATION_MAX_RETRIES) {
             throw error;
@@ -676,8 +1087,8 @@ export function UploadView({ onDocumentUploaded, onTestGenerated, existingDocume
 
           attempt++;
           toast({
-            variant: 'destructive',
-            title: 'Generation Failed',
+            variant: "destructive",
+            title: "Generation Failed",
             description: `Retrying question generation... (${attempt}/${INITIAL_GENERATION_MAX_RETRIES})`,
           });
           await new Promise((resolve) => setTimeout(resolve, 2000));
@@ -685,7 +1096,7 @@ export function UploadView({ onDocumentUploaded, onTestGenerated, existingDocume
       }
 
       if (!result) {
-        throw new Error('Initial question generation failed after retries.');
+        throw new Error("Initial question generation failed after retries.");
       }
 
       const dedupedQuestions = uniqueQuestions(result.questions as Question[]);
@@ -694,7 +1105,10 @@ export function UploadView({ onDocumentUploaded, onTestGenerated, existingDocume
 
       // Check if we generated minimum required questions
       if (dedupedQuestions.length < MIN_QUESTIONS) {
-        handleError(`Unable to generate minimum ${MIN_QUESTIONS} unique questions. Please try again or reduce document size.`, 'Insufficient Questions Generated');
+        handleError(
+          `Unable to generate minimum ${MIN_QUESTIONS} unique questions. Please try again or reduce document size.`,
+          "Insufficient Questions Generated",
+        );
         return;
       }
 
@@ -702,32 +1116,40 @@ export function UploadView({ onDocumentUploaded, onTestGenerated, existingDocume
       onTestGenerated(dedupedQuestions, settings, effectiveDocumentText);
     } catch (error) {
       console.error(error);
-      const errorMessage = (error as Error)?.message || 'An unknown error occurred.';
+      const errorMessage =
+        (error as Error)?.message || "An unknown error occurred.";
       const errorText = errorMessage.toLowerCase();
-      const isRateLimitError = errorMessage.includes('429');
-      const isServiceUnavailable = errorMessage.includes('503') || errorMessage.toLowerCase().includes('overloaded');
-      const isNetworkFailure = errorText.includes('failed to fetch') || errorText.includes('fetch') || errorText.includes('network') || errorText.includes('econnreset') || errorText.includes('etimedout') || errorText.includes('enotfound');
-
-      if (isServiceUnavailable || isNetworkFailure) {
-        const fallbackQuestions = generateOfflineFallbackQuestions(existingDocument.text, settings, INITIAL_BATCH_SIZE);
-
-        if (fallbackQuestions.length >= MIN_QUESTIONS) {
-          toast({
-            variant: 'destructive',
-            title: 'AI Unavailable - Using Offline Questions',
-            description: 'Started test with fallback questions because the AI service is currently unreachable.',
-          });
-          onTestGenerated(fallbackQuestions, settings, existingDocument.text);
-          return;
-        }
-      }
+      const isTemporaryUnavailable = errorMessage.includes(
+        "AI_TEMP_UNAVAILABLE",
+      );
+      const isRateLimitError = errorMessage.includes("429");
+      const isServiceUnavailable =
+        errorMessage.includes("503") ||
+        errorMessage.toLowerCase().includes("overloaded");
+      const isNetworkFailure =
+        errorText.includes("failed to fetch") ||
+        errorText.includes("fetch") ||
+        errorText.includes("network") ||
+        errorText.includes("econnreset") ||
+        errorText.includes("etimedout") ||
+        errorText.includes("enotfound");
 
       if (isRateLimitError) {
-        handleError("You've exceeded the free tier quota for the AI. Please wait a moment and try again, or upgrade your plan.", 'AI Rate Limit Reached');
-      } else if (isServiceUnavailable) {
-        handleError('The AI model is temporarily overloaded. Please wait a moment and try generating the test again.', 'AI Service Unavailable');
+        handleError(
+          "You've exceeded the free tier quota for the AI. Please wait a moment and try again, or upgrade your plan.",
+          "AI Rate Limit Reached",
+        );
+      } else if (
+        isTemporaryUnavailable ||
+        isServiceUnavailable ||
+        isNetworkFailure
+      ) {
+        handleError(
+          "The AI service is temporarily unavailable. Please check your connection and try again.",
+          "AI Service Unavailable",
+        );
       } else {
-        handleError('An unexpected error occurred while generating the test.');
+        handleError("An unexpected error occurred while generating the test.");
       }
     } finally {
       setIsLoading(false);
@@ -765,7 +1187,22 @@ export function UploadView({ onDocumentUploaded, onTestGenerated, existingDocume
   const getButtonText = () => {
     if (isLoading) return loadingMessage;
     if (isParsing) return loadingMessage;
-    return 'Generate Test';
+    return "Generate Test";
+  };
+
+  const toggleQuestionType = (value: QuestionType, checked: boolean) => {
+    setSettings((prev) => {
+      const nextTypes = checked
+        ? Array.from(new Set([...prev.questionType, value]))
+        : prev.questionType.filter((type) => type !== value);
+
+      return {
+        ...prev,
+        questionType: AVAILABLE_QUESTION_TYPES.filter((type) =>
+          nextTypes.includes(type),
+        ),
+      };
+    });
   };
 
   if (isTestCreationMode) {
@@ -773,9 +1210,14 @@ export function UploadView({ onDocumentUploaded, onTestGenerated, existingDocume
       <div className="w-full max-w-2xl mx-auto flex-grow flex items-center">
         <Card className="w-full animate-in fade-in-50 duration-500">
           <CardHeader>
-            <CardTitle className="text-3xl font-bold text-center font-headline">Create Your Test</CardTitle>
+            <CardTitle className="text-3xl font-bold text-center font-headline">
+              Create Your Test
+            </CardTitle>
             <CardDescription className="text-center">
-              Adjust the settings for the test based on your document: <span className="font-semibold text-primary">{existingDocument.file.name}</span>
+              Adjust the settings for the test based on your document:{" "}
+              <span className="font-semibold text-primary">
+                {existingDocument.file.name}
+              </span>
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-6">
@@ -783,47 +1225,48 @@ export function UploadView({ onDocumentUploaded, onTestGenerated, existingDocume
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               <div className="space-y-2">
                 <Label htmlFor="question-type">Question Type</Label>
-                <Select
-                  value={settings.questionType}
-                  onValueChange={(value) =>
-                    setSettings({
-                      ...settings,
-                      questionType: value as TestSettings['questionType'],
-                    })
-                  }
-                  disabled={isLoading}
-                >
-                  <SelectTrigger id="question-type" className="w-full">
-                    <SelectValue placeholder="Select type" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="multiple choice">
-                      <div className="flex items-center gap-2">
-                        <ListChecks className="w-4 h-4" /> Multiple Choice
-                      </div>
-                    </SelectItem>
-                    <SelectItem value="fill-in-the-blank">
-                      <div className="flex items-center gap-2">
-                        <Baseline className="w-4 h-4" /> Fill-in-the-Blank
-                      </div>
-                    </SelectItem>
-                    <SelectItem value="theory">
-                      <div className="flex items-center gap-2">
-                        <MessageSquare className="w-4 h-4" /> Open-Ended
-                      </div>
-                    </SelectItem>
-                    <SelectItem value="true or false">
-                      <div className="flex items-center gap-2">
-                        <CheckSquare className="w-4 h-4" /> True or False
-                      </div>
-                    </SelectItem>
-                    <SelectItem value="all">
-                      <div className="flex items-center gap-2">
-                        <FileType className="w-4 h-4" /> All Types
-                      </div>
-                    </SelectItem>
-                  </SelectContent>
-                </Select>
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button
+                      id="question-type"
+                      type="button"
+                      variant="outline"
+                      className={cn(
+                        "w-full justify-between",
+                        questionTypeError && "border-destructive",
+                      )}
+                      disabled={isLoading}
+                    >
+                      <span>{selectedQuestionTypesLabel}</span>
+                      <ListChecks className="w-4 h-4 text-muted-foreground" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent
+                    align="start"
+                    className="w-[--radix-dropdown-menu-trigger-width]"
+                  >
+                    {questionTypeOptions.map((typeOption) => (
+                      <DropdownMenuCheckboxItem
+                        key={typeOption.value}
+                        checked={settings.questionType.includes(
+                          typeOption.value,
+                        )}
+                        onSelect={(event) => event.preventDefault()}
+                        onCheckedChange={(checked) =>
+                          toggleQuestionType(typeOption.value, Boolean(checked))
+                        }
+                      >
+                        {typeOption.label}
+                      </DropdownMenuCheckboxItem>
+                    ))}
+                  </DropdownMenuContent>
+                </DropdownMenu>
+                {questionTypeError && (
+                  <p className="text-sm text-destructive flex items-center gap-1">
+                    <AlertTriangle className="w-3 h-3" />
+                    {questionTypeError}
+                  </p>
+                )}
               </div>
               <div className="space-y-2">
                 <Label htmlFor="num-questions">
@@ -836,12 +1279,19 @@ export function UploadView({ onDocumentUploaded, onTestGenerated, existingDocume
                   onChange={(e) =>
                     setSettings({
                       ...settings,
-                      numberOfQuestions: Math.min(MAX_QUESTIONS, Math.max(1, parseInt(e.target.value, 10) || 1)),
+                      numberOfQuestions: Math.min(
+                        MAX_QUESTIONS,
+                        Math.max(1, parseInt(e.target.value, 10) || 1),
+                      ),
                     })
                   }
                   min={MIN_QUESTIONS}
                   max={MAX_QUESTIONS}
-                  className={cn('w-full', questionCountError && 'border-destructive focus-visible:ring-destructive')}
+                  className={cn(
+                    "w-full",
+                    questionCountError &&
+                      "border-destructive focus-visible:ring-destructive",
+                  )}
                   disabled={isLoading}
                 />
                 {questionCountError && (
@@ -855,10 +1305,19 @@ export function UploadView({ onDocumentUploaded, onTestGenerated, existingDocume
 
             {/* Warning for 20+ questions */}
             {showWarning && !questionCountError && (
-              <Alert variant="destructive" className="border-orange-500/50 bg-orange-500/10">
+              <Alert
+                variant="destructive"
+                className="border-orange-500/50 bg-orange-500/10"
+              >
                 <AlertTriangle className="h-4 w-4 text-orange-500" />
-                <AlertTitle className="text-orange-600 dark:text-orange-400">Large Test Warning</AlertTitle>
-                <AlertDescription className="text-orange-600/90 dark:text-orange-400/90">Tests with {WARNING_THRESHOLD}+ questions may take longer to generate and could approach API rate limits. Consider breaking into smaller tests for better performance.</AlertDescription>
+                <AlertTitle className="text-orange-600 dark:text-orange-400">
+                  Large Test Warning
+                </AlertTitle>
+                <AlertDescription className="text-orange-600/90 dark:text-orange-400/90">
+                  Tests with {WARNING_THRESHOLD}+ questions may take longer to
+                  generate and could approach API rate limits. Consider breaking
+                  into smaller tests for better performance.
+                </AlertDescription>
               </Alert>
             )}
 
@@ -870,7 +1329,7 @@ export function UploadView({ onDocumentUploaded, onTestGenerated, existingDocume
                   onValueChange={(value) =>
                     setSettings({
                       ...settings,
-                      difficulty: value as TestSettings['difficulty'],
+                      difficulty: value as TestSettings["difficulty"],
                     })
                   }
                   disabled={isLoading}
@@ -904,7 +1363,7 @@ export function UploadView({ onDocumentUploaded, onTestGenerated, existingDocume
                   onValueChange={(value) =>
                     setSettings({
                       ...settings,
-                      questionSource: value as TestSettings['questionSource'],
+                      questionSource: value as TestSettings["questionSource"],
                     })
                   }
                   disabled={isLoading}
@@ -929,12 +1388,14 @@ export function UploadView({ onDocumentUploaded, onTestGenerated, existingDocume
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="topic-focus">Chapter / Topic Focus (optional)</Label>
+              <Label htmlFor="topic-focus">
+                Chapter / Topic Focus (optional)
+              </Label>
               <Input
                 id="topic-focus"
                 type="text"
                 placeholder="e.g. Chapter 3, Photosynthesis, Unit 2..."
-                value={settings.topicFocus || ''}
+                value={settings.topicFocus || ""}
                 onChange={(e) =>
                   setSettings({
                     ...settings,
@@ -943,19 +1404,33 @@ export function UploadView({ onDocumentUploaded, onTestGenerated, existingDocume
                 }
                 disabled={isLoading}
               />
-              <p className="text-xs text-muted-foreground">Leave blank to use the entire document.</p>
+              <p className="text-xs text-muted-foreground">
+                Leave blank to use the entire document.
+              </p>
             </div>
 
             <div className="space-y-4">
               <div className="flex items-center space-x-2">
-                <Switch id="timer-enabled" checked={settings.timerEnabled} onCheckedChange={(checked) => setSettings({ ...settings, timerEnabled: checked })} disabled={isLoading} />
-                <Label htmlFor="timer-enabled" className="flex items-center gap-2">
+                <Switch
+                  id="timer-enabled"
+                  checked={settings.timerEnabled}
+                  onCheckedChange={(checked) =>
+                    setSettings({ ...settings, timerEnabled: checked })
+                  }
+                  disabled={isLoading}
+                />
+                <Label
+                  htmlFor="timer-enabled"
+                  className="flex items-center gap-2"
+                >
                   <Timer className="w-4 h-4" /> Enable Timer
                 </Label>
               </div>
               {settings.timerEnabled && (
                 <div className="space-y-2 pl-8 animate-in fade-in-50 duration-300">
-                  <Label htmlFor="timer-duration">Timer Duration (minutes)</Label>
+                  <Label htmlFor="timer-duration">
+                    Timer Duration (minutes)
+                  </Label>
                   <Input
                     id="timer-duration"
                     type="number"
@@ -974,10 +1449,26 @@ export function UploadView({ onDocumentUploaded, onTestGenerated, existingDocume
             </div>
 
             {/* Generation Progress */}
+            {!isLoading && (
+              <div className="text-xs text-muted-foreground">
+                {preloadStatus === "scheduled" && "Preload scheduled..."}
+                {preloadStatus === "preloading" &&
+                  "Preloading first 5 questions..."}
+                {preloadStatus === "ready" &&
+                  `Preloaded ${preloadedEntry?.questions.length ?? 0} questions.`}
+                {preloadStatus === "cache-hit" &&
+                  `Reused ${preloadedEntry?.questions.length ?? 0} cached questions.`}
+                {preloadStatus === "error" &&
+                  "Preload failed. Generate Test will still work normally."}
+              </div>
+            )}
+
             {isLoading && (
               <div className="space-y-3 animate-in fade-in-50 duration-300">
                 <div className="flex items-center justify-between text-sm">
-                  <span className="text-muted-foreground">Generating initial questions...</span>
+                  <span className="text-muted-foreground">
+                    Generating initial questions...
+                  </span>
                   <span className="font-semibold">{generationProgress}%</span>
                 </div>
                 <Progress value={generationProgress} className="h-2" />
@@ -985,7 +1476,14 @@ export function UploadView({ onDocumentUploaded, onTestGenerated, existingDocume
             )}
           </CardContent>
           <CardFooter>
-            <Button onClick={handleGenerateTest} disabled={isLoading || !!questionCountError} className="w-full" size="lg">
+            <Button
+              onClick={handleGenerateTest}
+              disabled={
+                isLoading || !!questionCountError || !!questionTypeError
+              }
+              className="w-full"
+              size="lg"
+            >
               {isLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
               {getButtonText()}
             </Button>
@@ -999,13 +1497,35 @@ export function UploadView({ onDocumentUploaded, onTestGenerated, existingDocume
     <div className="w-full max-w-2xl mx-auto flex-grow flex items-center">
       <Card className="w-full animate-in fade-in-50 duration-500">
         <CardHeader>
-          <CardTitle className="text-3xl font-bold text-center font-headline">Upload Your Document</CardTitle>
-          <CardDescription className="text-center">Upload your study material to get started.</CardDescription>
+          <CardTitle className="text-3xl font-bold text-center font-headline">
+            Upload Your Document
+          </CardTitle>
+          <CardDescription className="text-center">
+            Upload your study material to get started.
+          </CardDescription>
         </CardHeader>
         <CardContent>
           <RecentDocuments onSelect={handleSelectRecent} />
-          <div className={cn('border-2 border-dashed rounded-lg p-8 text-center cursor-pointer transition-colors', isDragging ? 'border-primary bg-primary/10' : 'border-border hover:border-primary/50')} onClick={() => fileInputRef.current?.click()} onDrop={handleDrop} onDragOver={handleDragOver} onDragEnter={handleDragEnter} onDragLeave={handleDragLeave}>
-            <input type="file" ref={fileInputRef} className="hidden" onChange={(e) => handleFileChange(e.target.files?.[0] || null)} accept=".pdf,.docx,.pptx,.txt" />
+          <div
+            className={cn(
+              "border-2 border-dashed rounded-lg p-8 text-center cursor-pointer transition-colors",
+              isDragging
+                ? "border-primary bg-primary/10"
+                : "border-border hover:border-primary/50",
+            )}
+            onClick={() => fileInputRef.current?.click()}
+            onDrop={handleDrop}
+            onDragOver={handleDragOver}
+            onDragEnter={handleDragEnter}
+            onDragLeave={handleDragLeave}
+          >
+            <input
+              type="file"
+              ref={fileInputRef}
+              className="hidden"
+              onChange={(e) => handleFileChange(e.target.files?.[0] || null)}
+              accept=".pdf,.docx,.pptx,.txt"
+            />
             <div className="flex flex-col items-center gap-2 text-muted-foreground">
               <UploadCloud className="h-10 w-10 text-primary" />
               {file && !isParsing ? (
@@ -1013,39 +1533,63 @@ export function UploadView({ onDocumentUploaded, onTestGenerated, existingDocume
               ) : isParsing ? (
                 <div className="flex flex-col items-center gap-2">
                   <Loader2 className="h-8 w-8 animate-spin text-primary" />
-                  <p className="font-semibold text-foreground">{loadingMessage}</p>
+                  <p className="font-semibold text-foreground">
+                    {loadingMessage}
+                  </p>
                   {parsingProgress !== null && (
                     <div className="w-full max-w-xs space-y-1">
                       <Progress value={parsingProgress} className="h-2" />
-                      <p className="text-xs text-muted-foreground">{parsingProgress}%</p>
+                      <p className="text-xs text-muted-foreground">
+                        {parsingProgress}%
+                      </p>
                     </div>
                   )}
                 </div>
               ) : (
                 <>
-                  <p className="font-semibold text-foreground">Drag & drop your file here</p>
+                  <p className="font-semibold text-foreground">
+                    Drag & drop your file here
+                  </p>
                   <p>or click to browse</p>
                   <p className="text-xs">or paste a PDF from clipboard</p>
-                  <p className="text-xs mt-2">PDF, DOCX, PPTX, TXT supported (Max 50MB)</p>
+                  <p className="text-xs mt-2">
+                    PDF, DOCX, PPTX, TXT supported (Max 50MB)
+                  </p>
                 </>
               )}
             </div>
           </div>
-          <p className="text-xs text-muted-foreground mt-2">Scanned PDFs are supported with OCR and may take longer to process.</p>
+          <p className="text-xs text-muted-foreground mt-2">
+            Scanned PDFs are supported with OCR and may take longer to process.
+          </p>
 
           <div className="relative my-6">
             <div className="absolute inset-0 flex items-center">
               <span className="w-full border-t" />
             </div>
             <div className="relative flex justify-center text-xs uppercase">
-              <span className="bg-background px-2 text-muted-foreground">Or paste text</span>
+              <span className="bg-background px-2 text-muted-foreground">
+                Or paste text
+              </span>
             </div>
           </div>
 
           <div className="space-y-3">
             <Label htmlFor="manual-text-input">Paste your study text</Label>
-            <Textarea id="manual-text-input" placeholder="Paste or type your study material here..." rows={8} value={manualText} onChange={(e) => setManualText(e.target.value)} disabled={isParsing} />
-            <Button type="button" onClick={handleUseManualText} disabled={isParsing || !manualText.trim()} className="w-full">
+            <Textarea
+              id="manual-text-input"
+              placeholder="Paste or type your study material here..."
+              rows={8}
+              value={manualText}
+              onChange={(e) => setManualText(e.target.value)}
+              disabled={isParsing}
+            />
+            <Button
+              type="button"
+              onClick={handleUseManualText}
+              disabled={isParsing || !manualText.trim()}
+              className="w-full"
+            >
               Use This Text
             </Button>
           </div>

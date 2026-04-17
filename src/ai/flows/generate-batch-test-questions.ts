@@ -6,69 +6,41 @@
  */
 
 import { ai, withDualGeminiFallback } from '@/ai/genkit';
+import { shuffleMultipleChoiceChoices } from '@/lib/utils';
 import { z } from 'genkit';
 
 const GenerateBatchTestQuestionsInputSchema = z.object({
-  documentContent: z
-    .string()
-    .describe('The text content of the study document.'),
-  questionType: z
-    .enum([
-      'multiple choice',
-      'fill-in-the-blank',
-      'theory',
-      'true or false',
-      'all',
-    ])
-    .describe('The type of questions to generate.'),
-  difficulty: z
-    .enum(['easy', 'medium', 'hard'])
-    .describe('The difficulty level.'),
-  questionSource: z
-    .enum(['strict', 'formed'])
-    .describe('The source of the questions.'),
-  existingQuestions: z
-    .array(z.string())
-    .describe('Already generated questions to avoid duplicates.'),
-  batchSize: z
-    .number()
-    .default(5)
-    .describe('Number of questions to generate (default 5)'),
+  documentContent: z.string().describe('The text content of the study document.'),
+  questionTypes: z
+    .array(z.enum(['multiple choice', 'fill-in-the-blank', 'theory', 'true or false']))
+    .min(1)
+    .describe('The selected question types to generate.'),
+  difficulty: z.enum(['easy', 'medium', 'hard']).describe('The difficulty level.'),
+  questionSource: z.enum(['strict', 'formed']).describe('The source of the questions.'),
+  existingQuestions: z.array(z.string()).describe('Already generated questions to avoid duplicates.'),
+  batchSize: z.number().default(5).describe('Number of questions to generate (default 5)'),
 });
-export type GenerateBatchTestQuestionsInput = z.infer<
-  typeof GenerateBatchTestQuestionsInputSchema
->;
+export type GenerateBatchTestQuestionsInput = z.infer<typeof GenerateBatchTestQuestionsInputSchema>;
 
 const SingleQuestionSchema = z.object({
-  type: z
-    .enum(['multiple choice', 'fill-in-the-blank', 'theory', 'true or false'])
-    .describe('The type of question.'),
+  type: z.enum(['multiple choice', 'fill-in-the-blank', 'theory', 'true or false']).describe('The type of question.'),
   question: z.string().describe('The question text.'),
-  choices: z
-    .array(z.string())
-    .optional()
-    .describe('The possible answers for multiple choice.'),
-  correctAnswer: z
-    .union([z.string(), z.boolean()])
-    .optional()
-    .describe('The correct answer.'),
+  choices: z.array(z.string()).optional().describe('The possible answers for multiple choice.'),
+  correctAnswer: z.union([z.string(), z.boolean()]).optional().describe('The correct answer.'),
 });
 
 const GenerateBatchTestQuestionsOutputSchema = z.object({
-  questions: z
-    .array(SingleQuestionSchema)
-    .describe('Array of generated questions'),
+  questions: z.array(SingleQuestionSchema).describe('Array of generated questions'),
 });
-export type GenerateBatchTestQuestionsOutput = z.infer<
-  typeof GenerateBatchTestQuestionsOutputSchema
->;
+export type GenerateBatchTestQuestionsOutput = z.infer<typeof GenerateBatchTestQuestionsOutputSchema>;
 
 const prompt = ai.definePrompt({
   name: 'generateBatchTestQuestionsPrompt',
   input: {
     schema: GenerateBatchTestQuestionsInputSchema.extend({
       isStrict: z.boolean(),
-      isAllTypes: z.boolean(),
+      isMultiType: z.boolean(),
+      selectedType: z.string(),
     }),
   },
   output: { schema: GenerateBatchTestQuestionsOutputSchema },
@@ -76,13 +48,16 @@ const prompt = ai.definePrompt({
 
 Your main instruction is to generate {{batchSize}} UNIQUE questions.
 
-{{#if isAllTypes}}
-For each question, randomly choose a type from: "multiple choice", "fill-in-the-blank", "theory", or "true or false".
+{{#if isMultiType}}
+Use only these selected question types:
+{{#each questionTypes}}
+- {{{this}}}
+{{/each}}
+Distribute generated questions across the selected types as evenly as possible.
 You MUST set the 'type' field for each question.
-Vary the question types across the batch.
 {{else}}
-ALL questions must be '{{questionType}}' type.
-You MUST set the 'type' field to '{{questionType}}' for each question.
+ALL questions must be '{{selectedType}}' type.
+You MUST set the 'type' field to '{{selectedType}}' for each question.
 {{/if}}
 
 Each question must have a genuine '{{difficulty}}' difficulty level:
@@ -121,29 +96,26 @@ Generate {{batchSize}} unique, diverse questions now. Return them in a JSON obje
 `,
 });
 
-export async function generateBatchTestQuestions(
-  input: GenerateBatchTestQuestionsInput,
-): Promise<GenerateBatchTestQuestionsOutput> {
+export async function generateBatchTestQuestions(input: GenerateBatchTestQuestionsInput): Promise<GenerateBatchTestQuestionsOutput> {
   const isStrict = input.questionSource === 'strict';
-  const isAllTypes = input.questionType === 'all';
+  const isMultiType = input.questionTypes.length > 1;
+  const selectedType = input.questionTypes[0];
+  const selectedTypesText = input.questionTypes.map((type) => `"${type}"`).join(', ');
 
-  const existingQuestionsText =
-    input.existingQuestions.length > 0
-      ? input.existingQuestions.map((q) => `- ${q}`).join('\n')
-      : '- (none yet)';
+  const existingQuestionsText = input.existingQuestions.length > 0 ? input.existingQuestions.map((q) => `- ${q}`).join('\n') : '- (none yet)';
 
-  const systemInstruction =
-    'You are an expert test generator that creates high-quality test questions from uploaded documents.';
+  const systemInstruction = 'You are an expert test generator that creates high-quality test questions from uploaded documents.';
 
   const userPrompt = `Your main instruction is to generate ${input.batchSize} UNIQUE questions.
 
 ${
-  isAllTypes
-    ? `For each question, randomly choose a type from: "multiple choice", "fill-in-the-blank", "theory", or "true or false".
+  isMultiType
+    ? `Use only these selected question types: ${selectedTypesText}.
+Distribute generated questions across the selected types as evenly as possible.
 You MUST set the 'type' field for each question.
-Vary the question types across the batch.`
-    : `ALL questions must be '${input.questionType}' type.
-You MUST set the 'type' field to '${input.questionType}' for each question.`
+`
+    : `ALL questions must be '${selectedType}' type.
+You MUST set the 'type' field to '${selectedType}' for each question.`
 }
 
 Each question must have a genuine '${input.difficulty}' difficulty level:
@@ -162,7 +134,7 @@ Existing Questions:
 ${existingQuestionsText}
 
 **RESPONSE FORMAT RULES:**
-- For **'multiple choice'**: Provide question text, an array of 4 choices, and the correct answer (string), ensure the correct answer is randomly placed among options A, B, C, or D. Do NOT favor any particular position (B or C). Vary the correct answer position across questions to create balanced, natural-looking question sets. Each position (A, B, C, D) should have roughly equal probability of being correct across the generated questions.
+- For **'multiple choice'**: Provide question text, an array of 4 choices, and the correct answer (string).
 - For **'true or false'**: Provide question statement and boolean correct answer.
 - For **'fill-in-the-blank'**: Provide question sentence with a blank "____". No correctAnswer needed.
 - For **'theory'**: Provide open-ended question. No correctAnswer needed.
@@ -176,12 +148,13 @@ Generate ${input.batchSize} unique, diverse questions now. Return them in a JSON
 
   return withDualGeminiFallback(
     async () => {
-      const { output } = await prompt(
-        { ...input, isStrict, isAllTypes },
-        { model: 'googleai/gemini-2.5-flash' },
-      );
+      const { output } = await prompt({ ...input, isStrict, isMultiType, selectedType }, { model: 'googleai/gemini-2.5-flash' });
 
-      return output!;
+      const normalizedQuestions = (output?.questions || []).map((question) => shuffleMultipleChoiceChoices(question));
+
+      return {
+        questions: normalizedQuestions,
+      };
     },
     {
       systemInstruction,
@@ -191,7 +164,10 @@ Generate ${input.batchSize} unique, diverse questions now. Return them in a JSON
           .replace(/```json\n?/g, '')
           .replace(/```\n?/g, '')
           .trim();
-        return JSON.parse(cleaned) as GenerateBatchTestQuestionsOutput;
+        const parsed = JSON.parse(cleaned) as GenerateBatchTestQuestionsOutput;
+        return {
+          questions: (parsed.questions || []).map((question) => shuffleMultipleChoiceChoices(question)),
+        };
       },
     },
   );

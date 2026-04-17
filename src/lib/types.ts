@@ -1,8 +1,8 @@
-export type QuestionType = 'multiple choice' | 'fill-in-the-blank' | 'theory' | 'true or false' | 'all';
+export type QuestionType = 'multiple choice' | 'fill-in-the-blank' | 'theory' | 'true or false';
 
 export interface BaseQuestion {
   question: string;
-  type: Omit<QuestionType, 'all'>;
+  type: QuestionType;
 }
 
 export interface MultipleChoiceQuestion extends BaseQuestion {
@@ -27,7 +27,7 @@ export interface TheoryQuestion extends BaseQuestion {
 export type Question = MultipleChoiceQuestion | TrueFalseQuestion | FillInTheBlankQuestion | TheoryQuestion;
 
 export interface TestSettings {
-  questionType: QuestionType;
+  questionType: QuestionType[];
   numberOfQuestions: number;
   timerEnabled: boolean;
   timerDuration: number; // in minutes
