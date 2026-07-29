@@ -76,4 +76,15 @@ export const SCHEMA_DDL = /* sql */ `
     count BIGINT NOT NULL,
     window_start BIGINT NOT NULL
   );
+
+  CREATE TABLE IF NOT EXISTS past_question_sets (
+    id TEXT PRIMARY KEY NOT NULL,
+    user_id TEXT,
+    name TEXT NOT NULL,
+    text TEXT NOT NULL,
+    uploaded_at BIGINT NOT NULL DEFAULT floor(extract(epoch from now()))::bigint
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_past_questions_user ON past_question_sets (user_id);
+  CREATE INDEX IF NOT EXISTS idx_past_questions_uploaded ON past_question_sets (uploaded_at DESC);
 `;

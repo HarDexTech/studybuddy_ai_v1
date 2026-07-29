@@ -18,6 +18,8 @@ const GenerateBatchTestQuestionsInputSchema = z.object({
   questionSource: z.enum(['strict', 'formed']).describe('The source of the questions.'),
   existingQuestions: z.array(z.string()).describe('Already generated questions to avoid duplicates.'),
   batchSize: z.number().default(5).describe('Number of questions to generate (default 5)'),
+  priorityTopics: z.array(z.string()).optional().describe('Topics to prioritize / bias questions toward.'),
+  seedQuestions: z.array(z.string()).optional().describe('Past questions to reuse verbatim or lightly reworded.'),
 });
 export type GenerateBatchTestQuestionsInput = z.infer<typeof GenerateBatchTestQuestionsInputSchema>;
 
@@ -50,7 +52,7 @@ const USER_PROMPT = (input: GenerateBatchTestQuestionsInput) => {
   const selectedTypesText = input.questionTypes.map((type) => `"${type}"`).join(', ');
   const existingQuestionsText = input.existingQuestions.length > 0 ? input.existingQuestions.map((q) => `- ${q}`).join('\n') : '- (none yet)';
 
-  return `Your main instruction is to generate ${input.batchSize} UNIQUE questions.
+  let prompt = `Your main instruction is to generate ${input.batchSize} UNIQUE questions.
 
 ${
   isMultiType
@@ -71,9 +73,19 @@ ${isStrict ? `Questions and answers must be taken *strictly* and *literally* fro
 If the document appears to be a past-question or question-only material where explicit answers are not provided, infer the best correct answers using reliable subject knowledge and context from each question.
 For multiple-choice and true-or-false questions, always provide a best-answer decision.
 
-CRITICAL: You MUST NOT generate questions that are already present in the "Existing Questions" list below. Generate NEW, UNIQUE questions only.
+CRITICAL: You MUST NOT generate questions that are already present in the "Existing Questions" list below. Generate NEW, UNIQUE questions only.`;
 
-Existing Questions:
+  if (input.priorityTopics && input.priorityTopics.length > 0) {
+    prompt += `\n\nPRIORITY TOPICS — Bias approximately 60% of questions toward these topics:
+${input.priorityTopics.map((t) => `- ${t}`).join('\n')}`;
+  }
+
+  if (input.seedQuestions && input.seedQuestions.length > 0) {
+    prompt += `\n\nSEED QUESTIONS — Include some of these past questions verbatim or lightly reworded (they are valid for the document content):
+${input.seedQuestions.map((q) => `- ${q}`).join('\n')}`;
+  }
+
+  prompt += `\n\nExisting Questions:
 ${existingQuestionsText}
 
 **RESPONSE FORMAT RULES:**
@@ -88,6 +100,8 @@ ${input.documentContent}
 \`\`\`
 
 Generate ${input.batchSize} unique, diverse questions now. Return them in a JSON object with a 'questions' array. Return ONLY valid JSON, no markdown formatting.`;
+
+  return prompt;
 };
 
 function validateQuestion(q: RawQuestion): boolean {

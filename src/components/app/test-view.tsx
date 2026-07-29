@@ -524,6 +524,8 @@ export function TestView({
               (q) => q.question,
             ),
             batchSize,
+            priorityTopics: settings.priorityTopics,
+            seedQuestions: settings.seedQuestions,
           });
 
           const result = (await Promise.race([

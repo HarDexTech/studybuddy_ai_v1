@@ -26,6 +26,8 @@ const GenerateCrossDocumentQuestionsInputSchema = z.object({
   questionSource: z.enum(['strict', 'formed']).describe('The source of the questions.'),
   numberOfQuestions: z.number().min(1).max(10).default(5).describe('Number of questions to generate.'),
   existingQuestions: z.array(z.string()).describe('Already generated questions to avoid duplicates.'),
+  priorityTopics: z.array(z.string()).optional().describe('Topics to prioritize / bias questions toward.'),
+  seedQuestions: z.array(z.string()).optional().describe('Past questions to reuse verbatim or lightly reworded.'),
 });
 export type GenerateCrossDocumentQuestionsInput = z.infer<typeof GenerateCrossDocumentQuestionsInputSchema>;
 
@@ -61,7 +63,7 @@ const USER_PROMPT = (input: GenerateCrossDocumentQuestionsInput) => {
     .map((d, i) => `DOCUMENT ${i + 1}: "${d.name}"\n\`\`\`\n${d.content}\n\`\`\``)
     .join('\n\n');
 
-  return `Create ${input.numberOfQuestions} test questions that span the following documents. Each question must require knowledge from MULTIPLE documents to answer.
+  let prompt = `Create ${input.numberOfQuestions} test questions that span the following documents. Each question must require knowledge from MULTIPLE documents to answer.
 
 Documents:
 ${documentsText}
@@ -70,11 +72,23 @@ ${isMultiType ? `Question types: ${selectedTypesText}` : `All questions must be 
 Difficulty: ${input.difficulty}
 ${isStrict ? 'Questions must be strictly from the texts.' : 'Questions can be formed from the content.'}
 
-For each question, set 'sourceDoc' to the document name(s) referenced.
+For each question, set 'sourceDoc' to the document name(s) referenced.`;
 
-Existing questions to avoid: ${input.existingQuestions.length > 0 ? input.existingQuestions.map((q) => `"${q}"`).join(', ') : '(none)'}
+  if (input.priorityTopics && input.priorityTopics.length > 0) {
+    prompt += `\n\nPRIORITY TOPICS — Bias approximately 60% of questions toward these topics:
+${input.priorityTopics.map((t) => `- ${t}`).join('\n')}`;
+  }
+
+  if (input.seedQuestions && input.seedQuestions.length > 0) {
+    prompt += `\n\nSEED QUESTIONS — Include some of these past questions verbatim or lightly reworded (they are valid for the document content):
+${input.seedQuestions.map((q) => `- ${q}`).join('\n')}`;
+  }
+
+  prompt += `\n\nExisting questions to avoid: ${input.existingQuestions.length > 0 ? input.existingQuestions.map((q) => `"${q}"`).join(', ') : '(none)'}
 
 Return ONLY valid JSON with a 'questions' array. Each question must have 'type', 'question', and for multiple choice also 'choices' (4 items) and 'correctAnswer'. For true/false set correctAnswer as boolean. No markdown.`;
+
+  return prompt;
 };
 
 function validateQuestion(q: RawQuestion): boolean {

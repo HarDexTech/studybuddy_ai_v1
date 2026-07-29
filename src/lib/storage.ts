@@ -8,7 +8,7 @@
 
 import { getUserId, requireUserId } from "./auth";
 import { sql } from "./db";
-import type { CachedDocument, StoredTestProgress } from "./types";
+import type { CachedDocument, StoredTestProgress, PastQuestionSet } from "./types";
 
 const MAX_RECENT_DOCS = 10;
 const MAX_STORED_DOC_TEXT_CHARS = 200_000;
@@ -161,5 +161,67 @@ export async function clearTestProgress(): Promise<void> {
     await sql`DELETE FROM test_progress WHERE user_id = ${userId}`;
   } catch (error) {
     console.error("Failed to clear test progress:", error);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Past question sets storage
+// ---------------------------------------------------------------------------
+
+export async function getPastQuestionSets(): Promise<PastQuestionSet[]> {
+  const userId = await getUserId();
+  if (!userId) return [];
+  try {
+    const rows = (await sql`
+      SELECT id, user_id, name, text, uploaded_at
+      FROM past_question_sets WHERE user_id = ${userId}
+      ORDER BY uploaded_at DESC LIMIT 20
+    `) as { id: string; user_id: string; name: string; text: string; uploaded_at: number }[];
+    return rows.map((r) => ({ id: r.id, name: r.name, text: r.text, uploadedAt: r.uploaded_at }));
+  } catch (error) {
+    console.error("Failed to get past question sets:", error);
+    return [];
+  }
+}
+
+export async function addPastQuestionSet(set: PastQuestionSet): Promise<void> {
+  const userId = await requireUserId();
+  try {
+    await sql`
+      INSERT INTO past_question_sets (id, user_id, name, text, uploaded_at)
+      VALUES (${set.id}, ${userId}, ${set.name}, ${set.text}, ${set.uploadedAt})
+      ON CONFLICT(id) DO UPDATE SET
+        user_id = EXCLUDED.user_id,
+        name = EXCLUDED.name,
+        text = EXCLUDED.text,
+        uploaded_at = EXCLUDED.uploaded_at
+    `;
+  } catch (error) {
+    console.error("Failed to add past question set:", error);
+  }
+}
+
+export async function removePastQuestionSet(id: string): Promise<void> {
+  const userId = await requireUserId();
+  try {
+    await sql`DELETE FROM past_question_sets WHERE id = ${id} AND user_id = ${userId}`;
+  } catch (error) {
+    console.error("Failed to remove past question set:", error);
+  }
+}
+
+export async function getMultiplePastQuestionSets(ids: string[]): Promise<PastQuestionSet[]> {
+  const userId = await getUserId();
+  if (!userId || ids.length === 0) return [];
+  try {
+    const rows = (await sql`
+      SELECT id, user_id, name, text, uploaded_at
+      FROM past_question_sets WHERE user_id = ${userId} AND id = ANY(${ids}::text[])
+    `) as { id: string; user_id: string; name: string; text: string; uploaded_at: number }[];
+    const byId = new Map(rows.map((r) => [r.id, { id: r.id, name: r.name, text: r.text, uploadedAt: r.uploaded_at }]));
+    return ids.map((id) => byId.get(id)).filter((s): s is PastQuestionSet => Boolean(s));
+  } catch (error) {
+    console.error("Failed to get multiple past question sets:", error);
+    return [];
   }
 }

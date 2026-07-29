@@ -31,16 +31,16 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import jsPDF from "jspdf";
 
+type DocInfo = { name: string; type: string; text: string };
+
 type SummaryViewProps = {
-  documentText: string;
-  document: { name: string; type: string };
+  documents: DocInfo[];
   onStartTest: () => void;
   onStartNew: () => void;
 };
 
 export function SummaryView({
-  documentText,
-  document,
+  documents,
   onStartTest,
   onStartNew,
 }: SummaryViewProps) {
@@ -49,6 +49,9 @@ export function SummaryView({
   const [isLoading, setIsLoading] = useState(false);
   const [hasGenerated, setHasGenerated] = useState(false);
 
+  const isMultiDoc = documents.length > 1;
+  const primaryDoc = documents[0];
+
   const handleGenerate = async () => {
     if (isLoading) return;
 
@@ -56,7 +59,7 @@ export function SummaryView({
     setHasGenerated(true);
     try {
       const result = await generateDocumentSummary({
-        documentContent: documentText,
+        documents: documents.map((d) => ({ name: d.name, content: d.text })),
       });
       setSummary(result);
     } catch (error) {
@@ -89,7 +92,7 @@ export function SummaryView({
       const maxWidth = pageWidth - margin * 2;
 
       doc.setFontSize(18);
-      doc.text(`Summary: ${document.name}`, margin, y);
+      doc.text(`Summary${isMultiDoc ? " (Multi-Document)" : ""}: ${primaryDoc.name}${isMultiDoc ? " +" : ""}`, margin, y);
       y += 12;
 
       doc.setFontSize(10);
@@ -127,9 +130,16 @@ export function SummaryView({
 
       if (summary.chapterSummaries.length > 0) {
         const chapterLines = summary.chapterSummaries.map(
-          (ch) => `${ch.title}: ${ch.summary}`,
+          (ch) => `${ch.sourceDoc ? `[${ch.sourceDoc}] ` : ""}${ch.title}: ${ch.summary}`,
         );
         writeSection("Chapter Summaries", chapterLines);
+      }
+
+      if (summary.examFocusTopics && summary.examFocusTopics.length > 0) {
+        const focusLines = summary.examFocusTopics.map(
+          (f) => `[${f.frequency ?? "?"}x] ${f.topic}: ${f.note}`,
+        );
+        writeSection("Frequently Tested Topics", focusLines);
       }
 
       if (summary.keyTakeaways.length > 0) {
@@ -139,12 +149,12 @@ export function SummaryView({
 
       if (summary.glossary.length > 0) {
         const glossaryLines = summary.glossary.map(
-          (g) => `${g.term} — ${g.definition}`,
+          (g) => `${g.sourceDoc ? `[${g.sourceDoc}] ` : ""}${g.term} — ${g.definition}`,
         );
         writeSection("Glossary", glossaryLines);
       }
 
-      doc.save(`${document.name.replace(/\.[^/.]+$/, "")}-summary.pdf`);
+      doc.save(`${primaryDoc.name.replace(/\.[^/.]+$/, "")}-summary.pdf`);
     } catch (error) {
       console.error("PDF download error:", error);
       toast({
@@ -158,10 +168,39 @@ export function SummaryView({
   const renderSummary = () => {
     if (!summary) return null;
 
-    const { chapterSummaries, keyTakeaways, glossary } = summary;
+    const { chapterSummaries, keyTakeaways, glossary, examFocusTopics } = summary;
 
     return (
       <div className="space-y-6">
+        {examFocusTopics && examFocusTopics.length > 0 && (
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2 text-xl">
+                <Sparkles className="h-5 w-5 text-yellow-500" />
+                Frequently Tested Topics
+              </CardTitle>
+              <CardDescription>
+                Topics that appear frequently in past exam questions
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-3">
+                {examFocusTopics.map((entry, i) => (
+                  <div key={i} className="flex items-start gap-3 p-3 rounded-md border bg-muted/30">
+                    <div className="flex-shrink-0 w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center text-sm font-bold text-primary">
+                      {entry.frequency ?? "?"}
+                    </div>
+                    <div className="space-y-1">
+                      <p className="font-medium text-sm">{entry.topic}</p>
+                      <p className="text-sm text-muted-foreground">{entry.note}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
         {chapterSummaries.length > 0 && (
           <Card>
             <CardHeader>
@@ -170,7 +209,8 @@ export function SummaryView({
                 Chapter Summaries
               </CardTitle>
               <CardDescription>
-                Concise summaries of each section in the document
+                Concise summaries of each section
+                {isMultiDoc ? " across all documents" : " in the document"}
               </CardDescription>
             </CardHeader>
             <CardContent>
@@ -178,7 +218,12 @@ export function SummaryView({
                 {chapterSummaries.map((chapter, i) => (
                   <AccordionItem key={i} value={`chapter-${i}`}>
                     <AccordionTrigger className="text-base font-medium">
-                      {chapter.title}
+                      <span>{chapter.title}</span>
+                      {chapter.sourceDoc && (
+                        <span className="ml-2 text-xs text-muted-foreground font-normal">
+                          [{chapter.sourceDoc}]
+                        </span>
+                      )}
                     </AccordionTrigger>
                     <AccordionContent className="text-sm text-muted-foreground">
                       {chapter.summary}
@@ -198,7 +243,7 @@ export function SummaryView({
                 Key Takeaways
               </CardTitle>
               <CardDescription>
-                The most important concepts from the document
+                The most important concepts from the document{isMultiDoc ? "s" : ""}
               </CardDescription>
             </CardHeader>
             <CardContent>
@@ -229,7 +274,14 @@ export function SummaryView({
               <dl className="space-y-3">
                 {glossary.map((entry, i) => (
                   <div key={i}>
-                    <dt className="font-medium text-sm">{entry.term}</dt>
+                    <dt className="font-medium text-sm flex items-center gap-2">
+                      {entry.term}
+                      {entry.sourceDoc && (
+                        <span className="text-xs text-muted-foreground font-normal">
+                          [{entry.sourceDoc}]
+                        </span>
+                      )}
+                    </dt>
                     <dd className="text-sm text-muted-foreground mt-0.5">
                       {entry.definition}
                     </dd>
@@ -243,6 +295,10 @@ export function SummaryView({
     );
   };
 
+  const docLabel = isMultiDoc
+    ? `${documents.length} documents`
+    : primaryDoc.name;
+
   return (
     <div className="w-full max-w-5xl mx-auto flex-grow flex flex-col space-y-6 animate-in fade-in-50 duration-500">
       <Card>
@@ -251,10 +307,10 @@ export function SummaryView({
             <div>
               <CardTitle className="text-3xl font-bold font-headline flex items-center gap-2">
                 <FileText className="h-7 w-7" />
-                {document.name}
+                {isMultiDoc ? `${documents.length} Documents` : primaryDoc.name}
               </CardTitle>
               <CardDescription>
-                AI-generated summary, key takeaways, and glossary
+                AI-generated summary{isMultiDoc ? " across multiple documents" : ""}, key takeaways, and glossary
               </CardDescription>
             </div>
             <div className="flex gap-2">
@@ -281,11 +337,12 @@ export function SummaryView({
               <BookOpen className="h-12 w-12 text-muted-foreground" />
               <div className="space-y-1">
                 <p className="text-lg font-medium">
-                  Generate a Document Summary
+                  Generate {isMultiDoc ? "Multi-Document " : ""}Summary
                 </p>
                 <p className="text-sm text-muted-foreground max-w-md">
-                  Create chapter summaries, key takeaways, and a glossary of
-                  important terms from your document.
+                  {isMultiDoc
+                    ? `Create chapter summaries, key takeaways, and a glossary spanning ${documents.length} documents.`
+                    : "Create chapter summaries, key takeaways, and a glossary of important terms from your document."}
                 </p>
               </div>
               <Button onClick={handleGenerate} size="lg" disabled={isLoading}>
@@ -306,7 +363,7 @@ export function SummaryView({
             <div className="flex flex-col items-center justify-center py-12 text-center space-y-4">
               <Loader2 className="h-10 w-10 animate-spin text-muted-foreground" />
               <p className="text-sm text-muted-foreground">
-                Analyzing document and generating summary...
+                Analyzing document{isMultiDoc ? "s" : ""} and generating summary...
               </p>
             </div>
           ) : summary ? (

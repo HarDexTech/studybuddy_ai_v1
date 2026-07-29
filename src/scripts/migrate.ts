@@ -42,7 +42,7 @@ async function main(): Promise<void> {
   }
 
   console.log(
-    "✓ Schema applied. Tables: documents, test_progress, rate_limit_buckets.",
+    "✓ Schema applied. Tables: documents, test_progress, rate_limit_buckets, past_question_sets.",
   );
 }
 

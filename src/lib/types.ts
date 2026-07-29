@@ -35,6 +35,11 @@ export interface TestSettings {
   difficulty: 'easy' | 'medium' | 'hard';
   questionSource: 'strict' | 'formed';
   topicFocus?: string;
+  pastQuestionSetIds?: string[];
+  prioritizeExamTopics?: boolean;
+  reusePastQuestions?: boolean;
+  priorityTopics?: string[];
+  seedQuestions?: string[];
 }
 
 export interface TestResult {
@@ -67,6 +72,13 @@ export interface DocumentSummary {
   chapterSummaries: ChapterSummary[];
   keyTakeaways: string[];
   glossary: GlossaryTerm[];
+}
+
+export interface PastQuestionSet {
+  id: string;
+  name: string;
+  text: string;
+  uploadedAt: number;
 }
 
 export interface StoredTestProgress {

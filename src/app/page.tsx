@@ -1,5 +1,7 @@
 "use client";
 
+export const dynamic = "force-dynamic";
+
 import { useEffect, useState } from "react";
 import { Header } from "@/components/app/header";
 import { UploadView } from "@/components/app/upload-view";
@@ -290,8 +292,11 @@ export default function Home() {
         return (
           documentInfo && (
             <SummaryView
-              documentText={documentInfo.text}
-              document={documentInfo.file}
+              documents={[{
+                name: documentInfo.file.name,
+                type: documentInfo.file.type,
+                text: documentInfo.text,
+              }]}
               onStartTest={handleStartTestCreation}
               onStartNew={handleStartNew}
             />

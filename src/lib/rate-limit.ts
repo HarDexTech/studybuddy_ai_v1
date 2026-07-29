@@ -122,4 +122,5 @@ export const RateLimitPresets = {
   explain: { scope: "qna_EXPLAIN", limit: 60, windowSeconds: 60 },
   extract: { scope: "extract_TOPIC", limit: 30, windowSeconds: 60 },
   crossDoc: { scope: "gen_CROSS_DOC", limit: 20, windowSeconds: 60 },
+  topicAnalysis: { scope: "ana_TOPIC", limit: 10, windowSeconds: 120 },
 } as const;

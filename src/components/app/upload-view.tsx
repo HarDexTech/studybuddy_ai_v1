@@ -1,12 +1,16 @@
 "use client";
 
 import { useState, useRef, useEffect, type DragEvent } from "react";
+
+// Module-level cache for past-question topic analysis
+const topicAnalysisCache = new Map<string, { topics: string[]; seedQuestions: string[] }>();
 import * as pdfjs from "pdfjs-dist";
 import mammoth from "mammoth";
 import JSZip from "jszip";
 import { generateSingleTestQuestion } from "@/ai/flows/generate-single-test-question";
 import { generateCrossDocumentQuestions } from "@/ai/flows/generate-cross-document-questions";
 import { extractTopicSection } from "@/ai/flows/extract-topic-section";
+import { analyzePastQuestionTopics } from "@/ai/flows/analyze-past-question-topics";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import {
   AlertDialog,
@@ -49,11 +53,14 @@ import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import {
+  addPastQuestionSet,
   addRecentDocument,
   clearAllRecentDocuments,
   getMultipleRecentDocuments,
   getRecentDocuments,
+  getPastQuestionSets,
   removeRecentDocument,
+  removePastQuestionSet,
 } from "@/lib/storage";
 import type {
   CachedDocument,
@@ -281,6 +288,9 @@ export function UploadView({
   const [crossDocEnabled, setCrossDocEnabled] = useState(false);
   const [selectedDocIds, setSelectedDocIds] = useState<string[]>([]);
   const [recentDocs, setRecentDocs] = useState<CachedDocument[]>([]);
+  const [pastQuestionSets, setPastQuestionSets] = useState<{ id: string; name: string }[]>([]);
+  const [selectedPastQuestionSetIds, setSelectedPastQuestionSetIds] = useState<string[]>([]);
+  const [isPastQuestionsMode, setIsPastQuestionsMode] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const isTestCreationMode = !!existingDocument;
@@ -313,12 +323,13 @@ export function UploadView({
   // Show warning for 20+ questions
   const showWarning = settings.numberOfQuestions >= WARNING_THRESHOLD;
 
-  // Load recent docs for cross-document mode
+  // Load recent docs for cross-document mode and past question sets
   useEffect(() => {
     if (!isTestCreationMode) return;
     let cancelled = false;
     (async () => {
       const docs = await getRecentDocuments();
+      const pqSets = await getPastQuestionSets();
       if (cancelled) return;
       setRecentDocs(
         docs.filter(
@@ -327,6 +338,7 @@ export function UploadView({
             d.text !== existingDocument?.text,
         ),
       );
+      setPastQuestionSets(pqSets.map((s) => ({ id: s.id, name: s.name })));
     })();
     return () => {
       cancelled = true;
@@ -608,6 +620,24 @@ export function UploadView({
         type: selectedFile.type,
         size: selectedFile.size,
       };
+
+      if (isPastQuestionsMode) {
+        const now = Date.now();
+        await addPastQuestionSet({
+          id: `pq-${selectedFile.name}-${selectedFile.lastModified}`,
+          name: selectedFile.name,
+          text,
+          uploadedAt: now,
+        });
+        toast({
+          title: "Past Questions Saved",
+          description: `${selectedFile.name} saved as past exam questions.`,
+        });
+        setIsParsing(false);
+        setParsingProgress(null);
+        return;
+      }
+
       addRecentDocument({
         ...fileInfo,
         id: `${selectedFile.name}-${selectedFile.lastModified}`,
@@ -648,6 +678,21 @@ export function UploadView({
     const now = Date.now();
     const pastedDocumentName = `Pasted Text ${new Date(now).toLocaleString()}`;
     const pastedDocumentSize = new Blob([trimmedText]).size;
+
+    if (isPastQuestionsMode) {
+      addPastQuestionSet({
+        id: `pq-pasted-text-${now}`,
+        name: pastedDocumentName,
+        text: trimmedText,
+        uploadedAt: now,
+      }).catch((err) => console.error("Failed to persist past question set:", err));
+      toast({
+        title: "Past Questions Saved",
+        description: "Pasted text saved as past exam questions.",
+      });
+      setManualText("");
+      return;
+    }
 
     addRecentDocument({
       id: `pasted-text-${now}`,
@@ -758,6 +803,37 @@ export function UploadView({
         return;
       }
 
+      let prioritizedTopics: string[] | undefined;
+      let seedQ: string[] | undefined;
+
+      if (settings.pastQuestionSetIds && settings.pastQuestionSetIds.length > 0) {
+        const cacheKey = `${existingDocument.text.length}:${existingDocument.text.slice(0, 120)}|${settings.pastQuestionSetIds.sort().join(",")}`;
+
+        const cached = topicAnalysisCache.get(cacheKey);
+        if (cached) {
+          prioritizedTopics = cached.topics;
+          seedQ = settings.reusePastQuestions ? cached.seedQuestions : undefined;
+        } else {
+          setLoadingMessage("Analyzing past questions against document...");
+          try {
+            const pqSets = await (await import("@/lib/storage")).getMultiplePastQuestionSets(settings.pastQuestionSetIds);
+            const combinedPastText = pqSets.map((s) => `--- ${s.name} ---\n${s.text}`).join('\n\n');
+            const analysis = await analyzePastQuestionTopics({
+              documents: [{ name: existingDocument.file.name, content: existingDocument.text }],
+              pastQuestionsText: combinedPastText,
+            });
+            prioritizedTopics = analysis.topics.map((t) => t.topic);
+            seedQ = settings.reusePastQuestions ? analysis.matchingQuestions : undefined;
+            topicAnalysisCache.set(cacheKey, {
+              topics: prioritizedTopics,
+              seedQuestions: seedQ ?? [],
+            });
+          } catch (err) {
+            console.warn("Past-question analysis failed, continuing without topic bias:", err);
+          }
+        }
+      }
+
       if (settings.topicFocus?.trim()) {
         setLoadingMessage("Finding relevant section...");
         const extracted = await extractTopicSection({
@@ -820,7 +896,11 @@ export function UploadView({
         throw new Error("Failed to generate first question.");
       }
 
-      onTestGenerated([firstQuestion], settings, effectiveDocumentText);
+      onTestGenerated([firstQuestion], {
+        ...settings,
+        priorityTopics: prioritizedTopics,
+        seedQuestions: seedQ,
+      }, effectiveDocumentText);
     } catch (error) {
       const errorMessage =
         (error as Error)?.message || "An unknown error occurred.";
@@ -1224,6 +1304,132 @@ export function UploadView({
                 </div>
               )}
             </div>
+
+            {/* Past Questions Section */}
+            <div className="space-y-4 pt-2 border-t">
+              <div className="flex items-center space-x-2">
+                <Switch
+                  id="past-questions-enabled"
+                  checked={selectedPastQuestionSetIds.length > 0}
+                  onCheckedChange={(checked) => {
+                    if (!checked) {
+                      setSelectedPastQuestionSetIds([]);
+                      setSettings((prev) => ({
+                        ...prev,
+                        pastQuestionSetIds: undefined,
+                        prioritizeExamTopics: false,
+                        reusePastQuestions: false,
+                      }));
+                    }
+                  }}
+                  disabled={isLoading || pastQuestionSets.length === 0}
+                />
+                <Label
+                  htmlFor="past-questions-enabled"
+                  className="flex items-center gap-2"
+                >
+                  <FileText className="w-4 h-4" /> Past Exam Questions
+                </Label>
+              </div>
+              {selectedPastQuestionSetIds.length > 0 ? (
+                <div className="pl-8 space-y-3 animate-in fade-in-50 duration-300">
+                  <p className="text-xs text-muted-foreground">
+                    Past questions are analyzed to identify frequently tested
+                    topics for prioritized study.
+                  </p>
+                  <div className="flex items-center space-x-2">
+                    <Switch
+                      id="prioritize-topics"
+                      checked={settings.prioritizeExamTopics ?? true}
+                      onCheckedChange={(checked) =>
+                        setSettings((prev) => ({
+                          ...prev,
+                          prioritizeExamTopics: checked,
+                        }))
+                      }
+                      disabled={isLoading}
+                    />
+                    <Label htmlFor="prioritize-topics" className="text-sm">
+                      Prioritize topics from past questions
+                    </Label>
+                  </div>
+                  <div className="flex items-center space-x-2">
+                    <Switch
+                      id="reuse-past-questions"
+                      checked={settings.reusePastQuestions ?? false}
+                      onCheckedChange={(checked) =>
+                        setSettings((prev) => ({
+                          ...prev,
+                          reusePastQuestions: checked,
+                        }))
+                      }
+                      disabled={isLoading}
+                    />
+                    <Label htmlFor="reuse-past-questions" className="text-sm">
+                      Reuse past questions verbatim
+                    </Label>
+                  </div>
+                  {pastQuestionSets.length > 0 && (
+                    <ScrollArea className="max-h-36 rounded-md border p-2">
+                      <div className="space-y-1">
+                        {pastQuestionSets.map((pq) => (
+                          <div
+                            key={pq.id}
+                            className="flex items-center gap-2 p-2 rounded-md hover:bg-muted/50 cursor-pointer"
+                            onClick={() => {
+                              const newIds = selectedPastQuestionSetIds.includes(pq.id)
+                                ? selectedPastQuestionSetIds.filter((id) => id !== pq.id)
+                                : [...selectedPastQuestionSetIds, pq.id];
+                              setSelectedPastQuestionSetIds(newIds);
+                              setSettings((prev) => ({
+                                ...prev,
+                                pastQuestionSetIds: newIds.length > 0 ? newIds : undefined,
+                              }));
+                            }}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={selectedPastQuestionSetIds.includes(pq.id)}
+                              onChange={() => {}}
+                              className="h-4 w-4"
+                            />
+                            <p className="text-sm truncate">{pq.name}</p>
+                          </div>
+                        ))}
+                      </div>
+                    </ScrollArea>
+                  )}
+                </div>
+              ) : pastQuestionSets.length > 0 ? (
+                <div className="pl-8">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      setSelectedPastQuestionSetIds(
+                        pastQuestionSets.map((s) => s.id),
+                      );
+                      setSettings((prev) => ({
+                        ...prev,
+                        pastQuestionSetIds: pastQuestionSets.map((s) => s.id),
+                        prioritizeExamTopics: true,
+                      }));
+                    }}
+                    disabled={isLoading}
+                  >
+                    Select Past Questions to Analyze
+                  </Button>
+                </div>
+              ) : (
+                <div className="pl-8">
+                  <p className="text-xs text-muted-foreground">
+                    No past questions uploaded yet. Upload past exam papers in
+                    the document upload step.
+                  </p>
+                </div>
+              )}
+            </div>
           </CardContent>
           <CardFooter>
             <Button
@@ -1312,6 +1518,23 @@ export function UploadView({
           <p className="text-xs text-muted-foreground mt-2">
             Scanned PDFs are supported with OCR and may take longer to process.
           </p>
+
+          <div className="flex items-center space-x-2 mt-4">
+            <Switch
+              id="past-questions-upload-mode"
+              checked={isPastQuestionsMode}
+              onCheckedChange={setIsPastQuestionsMode}
+              disabled={isParsing}
+            />
+            <Label htmlFor="past-questions-upload-mode" className="flex items-center gap-2 text-sm">
+              <FileText className="w-4 h-4" /> Upload as past exam questions
+            </Label>
+          </div>
+          {isPastQuestionsMode && (
+            <p className="text-xs text-muted-foreground mt-1 ml-9">
+              Past questions will be saved separately and can be used to bias test generation toward frequently tested topics.
+            </p>
+          )}
 
           <div className="relative my-6">
             <div className="absolute inset-0 flex items-center">
