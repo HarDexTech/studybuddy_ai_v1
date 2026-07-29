@@ -848,7 +848,7 @@ export function UploadView({
       // Generate initial batch (up to 5 questions)
       const initialBatchSize = Math.min(5, settings.numberOfQuestions);
       setLoadingMessage(
-        `Generating ${initialBatchSize} question${initialBatchSize > 1 ? "s" : ""}...`,
+        `Generating Initial questions...`,
       );
 
       const batchResult = await generateBatchTestQuestions({
