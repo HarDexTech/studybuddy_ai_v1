@@ -38,22 +38,28 @@ async function deepseekChat(
   const temperature = options.temperature ?? 0.7;
   const maxOutputTokens = options.maxOutputTokens ?? 4096;
 
+  const body: Record<string, unknown> = {
+    model,
+    messages: [
+      { role: "system", content: systemInstruction },
+      { role: "user", content: userPrompt },
+    ],
+    max_tokens: maxOutputTokens,
+    stream: false,
+  };
+
+  // deepseek-reasoner does not support temperature
+  if (model !== "deepseek-reasoner") {
+    body.temperature = temperature;
+  }
+
   const res = await fetch(`${DEEPSEEK_BASE_URL}/chat/completions`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${DEEPSEEK_API_KEY}`,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({
-      model,
-      messages: [
-        { role: "system", content: systemInstruction },
-        { role: "user", content: userPrompt },
-      ],
-      temperature,
-      max_tokens: maxOutputTokens,
-      stream: false,
-    }),
+    body: JSON.stringify(body),
   });
 
   if (!res.ok) {
@@ -86,22 +92,28 @@ async function deepseekChatStream(
   const temperature = options.temperature ?? 0.7;
   const maxOutputTokens = options.maxOutputTokens ?? 4096;
 
+  const body: Record<string, unknown> = {
+    model,
+    messages: [
+      { role: "system", content: systemInstruction },
+      { role: "user", content: userPrompt },
+    ],
+    max_tokens: maxOutputTokens,
+    stream: true,
+  };
+
+  // deepseek-reasoner does not support temperature
+  if (model !== "deepseek-reasoner") {
+    body.temperature = temperature;
+  }
+
   const res = await fetch(`${DEEPSEEK_BASE_URL}/chat/completions`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${DEEPSEEK_API_KEY}`,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({
-      model,
-      messages: [
-        { role: "system", content: systemInstruction },
-        { role: "user", content: userPrompt },
-      ],
-      temperature,
-      max_tokens: maxOutputTokens,
-      stream: true,
-    }),
+    body: JSON.stringify(body),
   });
 
   if (!res.ok) {

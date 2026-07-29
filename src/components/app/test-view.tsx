@@ -560,7 +560,9 @@ export function TestView({
             mergedQuestions.length - currentGeneratedQuestions.length;
 
           if (addedCount === 0) {
-            throw new Error("Duplicate questions generated in batch");
+            console.warn("Batch produced only duplicates — skipping to next batch.");
+            i += batchSize;
+            continue;
           }
 
           currentGeneratedQuestions = mergedQuestions;
