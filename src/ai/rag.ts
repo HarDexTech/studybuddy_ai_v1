@@ -6,7 +6,7 @@ import { embedText } from './api';
 const CHUNK_SIZE = 1500;
 const CHUNK_OVERLAP = 200;
 
-export function chunkText(text: string, chunkSize = CHUNK_SIZE, overlap = CHUNK_OVERLAP): string[] {
+function chunkText(text: string, chunkSize = CHUNK_SIZE, overlap = CHUNK_OVERLAP): string[] {
   const cleaned = text.replace(/\r\n/g, '\n').trim();
   if (!cleaned) return [];
 
