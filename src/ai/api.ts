@@ -36,7 +36,7 @@ async function deepseekChat(
   options: { temperature?: number; maxOutputTokens?: number } = {},
 ): Promise<string> {
   const temperature = options.temperature ?? 0.7;
-  const maxOutputTokens = options.maxOutputTokens ?? 4096;
+  const maxOutputTokens = options.maxOutputTokens ?? 1024;
 
   const body: Record<string, unknown> = {
     model,
@@ -86,7 +86,7 @@ async function deepseekChatStream(
   } = {},
 ): Promise<string> {
   const temperature = options.temperature ?? 0.7;
-  const maxOutputTokens = options.maxOutputTokens ?? 4096;
+  const maxOutputTokens = options.maxOutputTokens ?? 1024;
 
   const body: Record<string, unknown> = {
     model,

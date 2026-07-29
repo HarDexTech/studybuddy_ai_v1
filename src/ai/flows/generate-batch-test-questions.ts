@@ -1,9 +1,9 @@
 'use server';
 /**
- * @fileOverview Generate multiple test questions in a single API call.
+ * @fileOverview Generate multiple test questions in a single API call — streaming for lower latency.
  */
 
-import { callNimJson } from '@/ai/api';
+import { callNimJsonStream } from '@/ai/api';
 import { RateLimitPresets, enforceRateLimit } from '@/lib/rate-limit';
 import { shuffleMultipleChoiceChoices } from '@/lib/utils';
 import { z } from 'zod';
@@ -17,7 +17,7 @@ const GenerateBatchTestQuestionsInputSchema = z.object({
   difficulty: z.enum(['easy', 'medium', 'hard']).describe('The difficulty level.'),
   questionSource: z.enum(['strict', 'formed']).describe('The source of the questions.'),
   existingQuestions: z.array(z.string()).describe('Already generated questions to avoid duplicates.'),
-  batchSize: z.number().default(5).describe('Number of questions to generate (default 5)'),
+  batchSize: z.number().default(2).describe('Number of questions to generate (default 2)'),
   priorityTopics: z.array(z.string()).optional().describe('Topics to prioritize / bias questions toward.'),
   seedQuestions: z.array(z.string()).optional().describe('Past questions to reuse verbatim or lightly reworded.'),
 });
@@ -73,7 +73,8 @@ ${isStrict ? `Questions and answers must be taken *strictly* and *literally* fro
 If the document appears to be a past-question or question-only material where explicit answers are not provided, infer the best correct answers using reliable subject knowledge and context from each question.
 For multiple-choice and true-or-false questions, always provide a best-answer decision.
 
-CRITICAL: You MUST NOT generate questions that are already present in the "Existing Questions" list below. Generate NEW, UNIQUE questions only.`;
+CRITICAL: You MUST NOT generate questions that are already present in the "Existing Questions" list below. Generate NEW, UNIQUE questions only.
+Be concise — keep question stems and answer choices short.`;
 
   if (input.priorityTopics && input.priorityTopics.length > 0) {
     prompt += `\n\nPRIORITY TOPICS — Bias approximately 60% of questions toward these topics:
@@ -99,7 +100,7 @@ Document Content:
 ${input.documentContent}
 \`\`\`
 
-Generate ${input.batchSize} unique, diverse questions now. Return them in a JSON object with a 'questions' array. Return ONLY valid JSON, no markdown formatting.`;
+Generate ${input.batchSize} unique, diverse questions now. Return them in a JSON object with a 'questions' array. Return ONLY valid JSON, no markdown formatting. Be concise.`;
 
   return prompt;
 };
@@ -131,22 +132,24 @@ const normalizeBatch = (raw: { questions?: unknown }): GenerateBatchTestQuestion
 
 export async function generateBatchTestQuestions(input: GenerateBatchTestQuestionsInput): Promise<GenerateBatchTestQuestionsOutput> {
   await enforceRateLimit(RateLimitPresets.testGeneration);
-  return callNimJson(SYSTEM, USER_PROMPT(input), (raw) => {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(raw);
-    } catch (error) {
-      throw new Error(
-        `Failed to parse batch-question response: ${
-          error instanceof Error ? error.message : 'unknown error'
-        }. Response preview: ${raw.slice(0, 200)}`,
-      );
-    }
-    if (parsed === null || typeof parsed !== 'object' || !Array.isArray((parsed as { questions?: unknown }).questions)) {
-      throw new Error(
-        `Batch response missing "questions" array. Response preview: ${raw.slice(0, 200)}`,
-      );
-    }
-    return normalizeBatch(parsed as { questions?: unknown });
+  // Streaming for faster first-byte — batch generation can be slow when waiting for full response
+  const raw = await callNimJsonStream(SYSTEM, USER_PROMPT(input), {
+    maxOutputTokens: input.batchSize * 1024,
   });
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    throw new Error(
+      `Failed to parse batch-question response: ${
+        error instanceof Error ? error.message : 'unknown error'
+      }. Response preview: ${raw.slice(0, 200)}`,
+    );
+  }
+  if (parsed === null || typeof parsed !== 'object' || !Array.isArray((parsed as { questions?: unknown }).questions)) {
+    throw new Error(
+      `Batch response missing "questions" array. Response preview: ${raw.slice(0, 200)}`,
+    );
+  }
+  return normalizeBatch(parsed as { questions?: unknown });
 }

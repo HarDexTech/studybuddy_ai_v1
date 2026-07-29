@@ -1,9 +1,9 @@
 "use server";
 /**
- * @fileOverview Validate a user's answer to a question.
+ * @fileOverview Validate a user's answer to a question — streaming for low latency.
  */
 
-import { callNimJson } from "@/ai/api";
+import { callNimJsonStream } from "@/ai/api";
 import { RateLimitPresets, enforceRateLimit } from "@/lib/rate-limit";
 import { z } from "zod";
 
@@ -61,27 +61,29 @@ export async function validateUserAnswer(
   input: ValidateUserAnswerInput,
 ): Promise<ValidateUserAnswerOutput> {
   await enforceRateLimit(RateLimitPresets.answerValidation);
-  return callNimJson(SYSTEM, USER_PROMPT(input), (raw) => {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(raw);
-    } catch (error) {
-      throw new Error(
-        `Failed to parse validation response: ${
-          error instanceof Error ? error.message : "unknown error"
-        }. Response preview: ${raw.slice(0, 200)}`,
-      );
-    }
-    if (
-      parsed === null ||
-      typeof parsed !== "object" ||
-      typeof (parsed as { isCorrect?: unknown }).isCorrect !== "boolean" ||
-      typeof (parsed as { feedback?: unknown }).feedback !== "string"
-    ) {
-      throw new Error(
-        `Missing or invalid isCorrect/feedback fields. Response preview: ${raw.slice(0, 200)}`,
-      );
-    }
-    return parsed as ValidateUserAnswerOutput;
+  // Streaming for faster first-byte — validation responses are small
+  const raw = await callNimJsonStream(SYSTEM, USER_PROMPT(input), {
+    maxOutputTokens: 512,
   });
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    throw new Error(
+      `Failed to parse validation response: ${
+        error instanceof Error ? error.message : "unknown error"
+      }. Response preview: ${raw.slice(0, 200)}`,
+    );
+  }
+  if (
+    parsed === null ||
+    typeof parsed !== "object" ||
+    typeof (parsed as { isCorrect?: unknown }).isCorrect !== "boolean" ||
+    typeof (parsed as { feedback?: unknown }).feedback !== "string"
+  ) {
+    throw new Error(
+      `Missing or invalid isCorrect/feedback fields. Response preview: ${raw.slice(0, 200)}`,
+    );
+  }
+  return parsed as ValidateUserAnswerOutput;
 }

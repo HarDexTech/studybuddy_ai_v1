@@ -90,8 +90,9 @@ const validationSteps = [
   "Finalizing feedback...",
 ];
 
-const BATCH_SIZE = 5;
-const BATCH_TIMEOUT = 60000; // 60 seconds for batch
+const BATCH_SIZE = 2;
+const BATCH_TIMEOUT = 30000; // 30 seconds for batch
+const FIRST_QUESTION_TIMEOUT = 10000; // 10 seconds for instant first question
 const VALIDATION_TIMEOUT = 30000; // 30 seconds for answer validation
 const MAX_RETRIES = 1;
 
@@ -272,6 +273,10 @@ export function TestView({
     );
   const [isLoading, setIsLoading] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [generationProgress, setGenerationProgress] = useState<{
+    current: number;
+    total: number;
+  } | null>(null);
   const [loadingStep, setLoadingStep] = useState(0);
   const [isAnswered, setIsAnswered] = useState(() =>
     restoreSnapshot ? restoreSnapshot.isAnswered : false,
@@ -290,6 +295,7 @@ export function TestView({
   const backgroundGenerationStarted = useRef(false);
   const generationErrorToastId = useRef<string | null>(null);
   const ragContext = useRef<string>("");
+  const instantFirstDone = useRef(false);
   const [isAskAiDialogOpen, setIsAskAiDialogOpen] = useState(false);
   const [validationSubmitError, setValidationSubmitError] = useState<
     string | null
@@ -517,13 +523,23 @@ export function TestView({
         setIsGenerating(true);
 
         try {
-          const batchSize = Math.min(remaining, BATCH_SIZE);
+          // Instant first question: generate 1 question quickly so user can start
+          let batchSize: number;
+          let currentTimeout: number;
+          if (!instantFirstDone.current && currentGeneratedQuestions.length <= settings.numberOfQuestions / 3) {
+            batchSize = 1;
+            currentTimeout = FIRST_QUESTION_TIMEOUT;
+            instantFirstDone.current = true;
+          } else {
+            batchSize = Math.min(remaining, BATCH_SIZE);
+            currentTimeout = BATCH_TIMEOUT;
+          }
           console.log(`Generating batch of ${batchSize} questions...`);
 
           const timeoutPromise = new Promise((_, reject) =>
             setTimeout(
               () => reject(new Error("Batch generation timeout")),
-              BATCH_TIMEOUT,
+              currentTimeout,
             ),
           );
 
@@ -567,6 +583,7 @@ export function TestView({
 
           currentGeneratedQuestions = mergedQuestions;
           setQuestions([...currentGeneratedQuestions]);
+          setGenerationProgress({ current: currentGeneratedQuestions.length, total: totalQuestionsToGenerate });
           i += addedCount;
           retryCount = 0;
         } catch (error) {
@@ -634,6 +651,8 @@ export function TestView({
           setIsGenerating(false);
         }
       }
+
+      setGenerationProgress(null);
 
       if (generationErrorToastId.current) {
         dismiss(generationErrorToastId.current);
@@ -1175,7 +1194,11 @@ export function TestView({
                 {isGenerating && !isNextQuestionReady ? (
                   <>
                     <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    <span>Generating next question...</span>
+                    <span>
+                      {generationProgress
+                        ? `Generating... (${generationProgress.current}/${generationProgress.total})`
+                        : "Generating next question..."}
+                    </span>
                   </>
                 ) : isTestFinished ? (
                   "Finish Test"
