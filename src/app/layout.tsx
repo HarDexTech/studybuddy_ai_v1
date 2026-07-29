@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import { Analytics } from '@vercel/analytics/next';
+import { ClerkProvider } from '@clerk/nextjs';
 import './globals.css';
 
 export const metadata: Metadata = {
@@ -7,8 +8,6 @@ export const metadata: Metadata = {
   description:
     'Upload documents and generate tests to supercharge your study sessions.',
 };
-
-export const dynamic = 'force-dynamic';
 
 export default function RootLayout({
   children,
@@ -18,7 +17,7 @@ export default function RootLayout({
   return (
     <html lang="en" className="dark">
       <body className="font-body antialiased">
-        {children}
+        <ClerkProvider>{children}</ClerkProvider>
         <Analytics />
       </body>
     </html>

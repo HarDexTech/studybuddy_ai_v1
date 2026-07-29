@@ -3,6 +3,7 @@ export type QuestionType = 'multiple choice' | 'fill-in-the-blank' | 'theory' | 
 export interface BaseQuestion {
   question: string;
   type: QuestionType;
+  sourceDoc?: string;
 }
 
 export interface MultipleChoiceQuestion extends BaseQuestion {
@@ -50,4 +51,39 @@ export interface CachedDocument {
   size: number;
   lastModified: number;
   text: string;
+}
+
+export interface ChapterSummary {
+  title: string;
+  summary: string;
+}
+
+export interface GlossaryTerm {
+  term: string;
+  definition: string;
+}
+
+export interface DocumentSummary {
+  chapterSummaries: ChapterSummary[];
+  keyTakeaways: string[];
+  glossary: GlossaryTerm[];
+}
+
+export interface StoredTestProgress {
+  docSignature?: string;
+  settingsSignature?: string;
+  documentInfo?: {
+    text: string;
+    file?: { name: string; type: string; size: number };
+  };
+  settings?: unknown;
+  effectiveDocumentText?: string;
+  currentQuestionIndex?: number;
+  userAnswer?: string;
+  results?: unknown[];
+  currentResult?: { isCorrect: boolean; feedback: string } | null;
+  isAnswered?: boolean;
+  timeLeft?: number | null;
+  questions?: unknown[];
+  generatedQuestionCount?: number;
 }

@@ -14,7 +14,7 @@ export function shuffleArray<T>(array: T[]): T[] {
   return copy;
 }
 
-export function shuffleMultipleChoiceChoices<T extends { type: string; choices?: string[]; correctAnswer?: string | boolean }>(question: T): T {
+export function shuffleMultipleChoiceChoices<T extends { type?: string; choices?: string[]; correctAnswer?: string | boolean }>(question: T): T {
   if (question.type !== 'multiple choice' || !Array.isArray(question.choices) || question.choices.length < 2) {
     return question;
   }

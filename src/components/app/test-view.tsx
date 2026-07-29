@@ -1,7 +1,6 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback } from "react";
-import { generateSingleTestQuestion } from "@/ai/flows/generate-single-test-question";
 import { generateBatchTestQuestions } from "@/ai/flows/generate-batch-test-questions";
 import {
   validateUserAnswer,
@@ -56,8 +55,10 @@ import {
   LogOut,
   Sparkles,
   HelpCircle,
+  FileText,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+import { clearTestProgress, saveTestProgress } from "@/lib/storage";
 import { pickRandomDocumentChunk } from "@/lib/utils";
 
 type TestViewProps = {
@@ -90,10 +91,8 @@ const validationSteps = [
 
 const BATCH_SIZE = 5;
 const BATCH_TIMEOUT = 60000; // 60 seconds for batch
-const INDIVIDUAL_TIMEOUT = 30000; // 30 seconds for individual
 const VALIDATION_TIMEOUT = 30000; // 30 seconds for answer validation
 const MAX_RETRIES = 1;
-const TEST_PROGRESS_KEY = "studybuddy-active-test-progress";
 
 // Fisher-Yates shuffle algorithm
 const shuffleArray = <T,>(array: T[]): T[] => {
@@ -298,6 +297,17 @@ export function TestView({
   const totalQuestionsToGenerate = settings.numberOfQuestions;
   const currentQuestion = questions[currentQuestionIndex] ?? questions[0];
 
+  if (questions.length === 0) {
+    return (
+      <div className="w-full max-w-3xl mx-auto flex-grow flex flex-col justify-center items-center space-y-4">
+        <p className="text-muted-foreground">
+          Failed to load questions. Please go back and try again.
+        </p>
+        <Button onClick={() => onTestFinished([], 0)}>Go Back</Button>
+      </div>
+    );
+  }
+
   const nextButtonRef = useRef<HTMLButtonElement>(null);
   const submitButtonRef = useRef<HTMLButtonElement>(null);
 
@@ -322,9 +332,9 @@ export function TestView({
 
   const finishTest = useCallback(
     (finalResults: TestResult[]) => {
-      if (typeof window !== "undefined") {
-        window.localStorage.removeItem(TEST_PROGRESS_KEY);
-      }
+      clearTestProgress().catch((err) =>
+        console.error("Failed to clear test progress:", err),
+      );
       onTestFinished(finalResults, questions.length);
     },
     [onTestFinished, questions.length],
@@ -355,31 +365,25 @@ export function TestView({
   }, [restoreSnapshot, questions.length, totalQuestionsToGenerate]);
 
   useEffect(() => {
-    if (typeof window === "undefined") {
-      return;
-    }
+    const payload = {
+      docSignature: `${documentInfo.text.length}:${documentInfo.text.slice(0, 120)}`,
+      settingsSignature: JSON.stringify(settings),
+      documentInfo,
+      settings,
+      effectiveDocumentText,
+      currentQuestionIndex,
+      userAnswer,
+      results,
+      currentResult,
+      isAnswered,
+      timeLeft,
+      questions,
+      generatedQuestionCount: questions.length,
+    };
 
-    try {
-      const payload = {
-        docSignature: `${documentInfo.text.length}:${documentInfo.text.slice(0, 120)}`,
-        settingsSignature: JSON.stringify(settings),
-        documentInfo,
-        settings,
-        effectiveDocumentText,
-        currentQuestionIndex,
-        userAnswer,
-        results,
-        currentResult,
-        isAnswered,
-        timeLeft,
-        questions,
-        generatedQuestionCount: questions.length,
-      };
-
-      window.localStorage.setItem(TEST_PROGRESS_KEY, JSON.stringify(payload));
-    } catch (error) {
-      console.error("Failed to persist test progress:", error);
-    }
+    saveTestProgress(payload).catch((err) =>
+      console.error("Failed to persist test progress:", err),
+    );
   }, [
     documentInfo.text,
     documentInfo,
@@ -501,100 +505,54 @@ export function TestView({
         setIsGenerating(true);
 
         try {
-          if (remaining >= BATCH_SIZE) {
-            // Use batch generation for 5+ questions
-            console.log(`Generating batch of ${BATCH_SIZE} questions...`);
+          const batchSize = Math.min(remaining, BATCH_SIZE);
+          console.log(`Generating batch of ${batchSize} questions...`);
 
-            const timeoutPromise = new Promise((_, reject) =>
-              setTimeout(
-                () => reject(new Error("Batch generation timeout")),
-                BATCH_TIMEOUT,
-              ),
-            );
+          const timeoutPromise = new Promise((_, reject) =>
+            setTimeout(
+              () => reject(new Error("Batch generation timeout")),
+              BATCH_TIMEOUT,
+            ),
+          );
 
-            const generationPromise = generateBatchTestQuestions({
-              documentContent: pickRandomDocumentChunk(effectiveDocumentText),
-              questionTypes: settings.questionType,
-              difficulty: settings.difficulty,
-              questionSource: settings.questionSource,
-              existingQuestions: currentGeneratedQuestions.map(
-                (q) => q.question,
-              ),
-              batchSize: BATCH_SIZE,
-            });
+          const generationPromise = generateBatchTestQuestions({
+            documentContent: pickRandomDocumentChunk(effectiveDocumentText),
+            questionTypes: settings.questionType,
+            difficulty: settings.difficulty,
+            questionSource: settings.questionSource,
+            existingQuestions: currentGeneratedQuestions.map(
+              (q) => q.question,
+            ),
+            batchSize,
+          });
 
-            const result = (await Promise.race([
-              generationPromise,
-              timeoutPromise,
-            ])) as any;
+          const result = (await Promise.race([
+            generationPromise.then((r) => ({
+              questions: r.questions as Question[],
+            })),
+            timeoutPromise,
+          ])) as { questions: Question[] };
 
-            if (generationErrorToastId.current) {
-              dismiss(generationErrorToastId.current);
-              generationErrorToastId.current = null;
-            }
-
-            const mergedQuestions = appendUniqueQuestions(
-              currentGeneratedQuestions,
-              result.questions as Question[],
-            );
-            const addedCount =
-              mergedQuestions.length - currentGeneratedQuestions.length;
-
-            if (addedCount === 0) {
-              throw new Error("Duplicate questions generated in batch");
-            }
-
-            currentGeneratedQuestions = mergedQuestions;
-            setQuestions([...currentGeneratedQuestions]);
-            i += addedCount;
-            retryCount = 0; // Reset retry count on success
-          } else {
-            // Generate individually for < 5 questions
-            console.log(`Generating individual question ${i + 1}...`);
-
-            const timeoutPromise = new Promise((_, reject) =>
-              setTimeout(
-                () => reject(new Error("Individual generation timeout")),
-                INDIVIDUAL_TIMEOUT,
-              ),
-            );
-
-            const generationPromise = generateSingleTestQuestion({
-              documentContent: pickRandomDocumentChunk(effectiveDocumentText),
-              questionTypes: settings.questionType,
-              difficulty: settings.difficulty,
-              questionSource: settings.questionSource,
-              existingQuestions: currentGeneratedQuestions.map(
-                (q) => q.question,
-              ),
-            });
-
-            const result = (await Promise.race([
-              generationPromise,
-              timeoutPromise,
-            ])) as any;
-
-            if (generationErrorToastId.current) {
-              dismiss(generationErrorToastId.current);
-              generationErrorToastId.current = null;
-            }
-
-            const mergedQuestions = appendUniqueQuestions(
-              currentGeneratedQuestions,
-              [result as Question],
-            );
-            const addedCount =
-              mergedQuestions.length - currentGeneratedQuestions.length;
-
-            if (addedCount === 0) {
-              throw new Error("Duplicate question generated");
-            }
-
-            currentGeneratedQuestions = mergedQuestions;
-            setQuestions([...currentGeneratedQuestions]);
-            i += addedCount;
-            retryCount = 0; // Reset retry count on success
+          if (generationErrorToastId.current) {
+            dismiss(generationErrorToastId.current);
+            generationErrorToastId.current = null;
           }
+
+          const mergedQuestions = appendUniqueQuestions(
+            currentGeneratedQuestions,
+            result.questions,
+          );
+          const addedCount =
+            mergedQuestions.length - currentGeneratedQuestions.length;
+
+          if (addedCount === 0) {
+            throw new Error("Duplicate questions generated in batch");
+          }
+
+          currentGeneratedQuestions = mergedQuestions;
+          setQuestions([...currentGeneratedQuestions]);
+          i += addedCount;
+          retryCount = 0;
         } catch (error) {
           console.error("Failed to generate question(s):", error);
           const errorMessage =
@@ -699,13 +657,15 @@ export function TestView({
   }, [currentQuestionIndex, questions, results]);
 
   useEffect(() => {
-    let interval: NodeJS.Timeout;
+    let interval: ReturnType<typeof setInterval> | undefined;
     if (isLoading) {
       interval = setInterval(() => {
         setLoadingStep((prev) => (prev + 1) % validationSteps.length);
       }, 2000);
     }
-    return () => clearInterval(interval);
+    return () => {
+      if (interval !== undefined) clearInterval(interval);
+    };
   }, [isLoading]);
 
   const handleAnswerSubmit = async () => {
@@ -1067,6 +1027,15 @@ export function TestView({
         </CardHeader>
         <CardContent className="space-y-6">
           <p className="text-lg font-medium">{currentQuestion.question}</p>
+
+          {currentQuestion.sourceDoc && (
+            <div className="flex items-center gap-1.5">
+              <FileText className="h-3.5 w-3.5 text-muted-foreground" />
+              <span className="text-xs text-muted-foreground">
+                Based on: {currentQuestion.sourceDoc}
+              </span>
+            </div>
+          )}
 
           {renderAnswerInput()}
 

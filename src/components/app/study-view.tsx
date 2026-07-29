@@ -14,6 +14,7 @@ type StudyViewProps = {
     documentText: string;
     onStartTest: () => void;
     onStartNew: () => void;
+    onSummarize?: () => void;
 };
 
 function QnaSection({ documentText }: { documentText: string }) {
@@ -97,7 +98,7 @@ function DocumentPreview({ file, textContent }: { file: { name: string, type: st
     );
 }
 
-export function StudyView({ document, documentText, onStartTest, onStartNew }: StudyViewProps) {
+export function StudyView({ document, documentText, onStartTest, onStartNew, onSummarize }: StudyViewProps) {
     return (
         <div className="w-full max-w-5xl mx-auto flex-grow flex flex-col space-y-6 animate-in fade-in-50 duration-500">
             <Card>
@@ -115,6 +116,12 @@ export function StudyView({ document, documentText, onStartTest, onStartNew }: S
                                 <PlusCircle className="mr-2 h-4 w-4" />
                                 Start New
                             </Button>
+                            {onSummarize && (
+                                <Button onClick={onSummarize} variant="secondary">
+                                    <Sparkles className="mr-2 h-4 w-4" />
+                                    Summarize
+                                </Button>
+                            )}
                             <Button onClick={onStartTest} size="lg">
                                 <Pencil className="mr-2 h-4 w-4" />
                                 Create Test

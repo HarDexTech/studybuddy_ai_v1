@@ -1,23 +1,13 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, type DragEvent } from "react";
 import * as pdfjs from "pdfjs-dist";
 import mammoth from "mammoth";
 import JSZip from "jszip";
-import { generateBatchTestQuestions } from "@/ai/flows/generate-batch-test-questions";
+import { generateSingleTestQuestion } from "@/ai/flows/generate-single-test-question";
+import { generateCrossDocumentQuestions } from "@/ai/flows/generate-cross-document-questions";
 import { extractTopicSection } from "@/ai/flows/extract-topic-section";
-import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardFooter,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
-import { Label } from "@/components/ui/label";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -29,12 +19,25 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
+import { Button } from "@/components/ui/button";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardFooter,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Progress } from "@/components/ui/progress";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   Select,
   SelectContent,
@@ -43,41 +46,41 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Progress } from "@/components/ui/progress";
+import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import {
-  UploadCloud,
-  ListChecks,
-  Loader2,
-  Timer,
-  BrainCircuit,
-  Brain,
-  BrainCog,
-  FileText,
-  FileJson,
-  History,
-  AlertTriangle,
-  Trash2,
-  X,
-} from "lucide-react";
+  addRecentDocument,
+  clearAllRecentDocuments,
+  getMultipleRecentDocuments,
+  getRecentDocuments,
+  removeRecentDocument,
+} from "@/lib/storage";
 import type {
-  TestSettings,
-  Question,
   CachedDocument,
+  Question,
   QuestionType,
+  TestSettings,
 } from "@/lib/types";
 import { cn, pickRandomDocumentChunk } from "@/lib/utils";
 import {
-  getRecentDocuments,
-  addRecentDocument,
-  removeRecentDocument,
-  clearAllRecentDocuments,
-} from "@/lib/storage";
+  AlertTriangle,
+  Brain,
+  BrainCircuit,
+  BrainCog,
+  FileJson,
+  FileText,
+  History,
+  ListChecks,
+  Loader2,
+  Timer,
+  Trash2,
+  UploadCloud,
+  X,
+} from "lucide-react";
 
 type UploadViewProps = {
   onDocumentUploaded: (
-    documentText: string,
+    text: string,
     file: { name: string; type: string; size: number },
   ) => void;
   onTestGenerated: (
@@ -89,36 +92,17 @@ type UploadViewProps = {
     text: string;
     file: { name: string; type: string; size: number };
   } | null;
-  preloadActivationId?: number;
-  sharedPreload?: PreloadEntry | null;
-  sharedPreloadStatus?: PreloadStatus;
-  onSharedPreloadChange?: (
-    entry: PreloadEntry | null,
-    status: PreloadStatus,
-  ) => void;
 };
 
-const parsingSteps = [
-  "Analyzing document...",
-  "Extracting text...",
-  "Almost ready...",
-];
-
-const INITIAL_BATCH_SIZE = 5;
+const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
 const MIN_QUESTIONS = 5;
 const MAX_QUESTIONS = 50;
-const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
 const WARNING_THRESHOLD = 20;
-const INITIAL_GENERATION_TIMEOUT = 60000;
+const INITIAL_GENERATION_TIMEOUT = 30000;
 const INITIAL_GENERATION_MAX_RETRIES = 1;
-const PRELOAD_DELAY_MS = 1500;
-const PRELOAD_CACHE_TTL_MS = 5 * 60 * 1000;
-const OCR_TEXT_MIN_LENGTH = 200;
-const OCR_TEXT_PER_PAGE_MIN = 40;
-const OCR_PAGE_RENDER_SCALE = 3;
-
-const FALLBACK_WORD_MIN_LENGTH = 5;
-const FALLBACK_SENTENCE_MIN_LENGTH = 30;
+const OCR_TEXT_MIN_LENGTH = 800;
+const OCR_TEXT_PER_PAGE_MIN = 120;
+const OCR_PAGE_RENDER_SCALE = 2;
 
 const AVAILABLE_QUESTION_TYPES: QuestionType[] = [
   "multiple choice",
@@ -127,176 +111,11 @@ const AVAILABLE_QUESTION_TYPES: QuestionType[] = [
   "true or false",
 ];
 
-type PreloadStatus =
-  | "idle"
-  | "scheduled"
-  | "preloading"
-  | "ready"
-  | "cache-hit"
-  | "error";
-
-type PreloadEntry = {
-  key: string;
-  createdAt: number;
-  questions: Question[];
-  effectiveDocumentText: string;
-};
-
-const normalizeQuestionText = (value: string) =>
-  value
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-
-const uniqueQuestions = (questions: Question[]) => {
-  const seen = new Set<string>();
-  return questions.filter((question) => {
-    const normalized = normalizeQuestionText(question.question);
-    if (!normalized || seen.has(normalized)) {
-      return false;
-    }
-    seen.add(normalized);
-    return true;
-  });
-};
-
-const shuffleArray = <T,>(array: T[]) => {
-  const copy = [...array];
-  for (let i = copy.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [copy[i], copy[j]] = [copy[j], copy[i]];
-  }
-  return copy;
-};
-
-const splitIntoSentences = (text: string) =>
-  text
-    .replace(/\s+/g, " ")
-    .split(/(?<=[.!?])\s+/)
-    .map((sentence) => sentence.trim())
-    .filter((sentence) => sentence.length >= FALLBACK_SENTENCE_MIN_LENGTH);
-
-const extractWordPool = (text: string) => {
-  const words = text.toLowerCase().match(/[a-zA-Z][a-zA-Z-]{4,}/g);
-
-  if (!words) return [];
-  return Array.from(
-    new Set(words.filter((word) => word.length >= FALLBACK_WORD_MIN_LENGTH)),
-  );
-};
-
-const pickBlankWord = (sentence: string) => {
-  const candidates = sentence.match(/[a-zA-Z][a-zA-Z-]{4,}/g) || [];
-  if (candidates.length === 0) return null;
-  return candidates[Math.floor(Math.random() * candidates.length)];
-};
-
-const makeMultipleChoiceQuestion = (
-  sentence: string,
-  wordPool: string[],
-): Question => {
-  const correctAnswer = pickBlankWord(sentence) || "information";
-  const prompt = sentence.replace(
-    new RegExp(`\\b${correctAnswer}\\b`, "i"),
-    "_____",
-  );
-
-  const distractors = shuffleArray(
-    wordPool.filter(
-      (word) => word.toLowerCase() !== correctAnswer.toLowerCase(),
-    ),
-  ).slice(0, 3);
-
-  while (distractors.length < 3) {
-    distractors.push(`option-${distractors.length + 1}`);
-  }
-
-  const choices = shuffleArray([correctAnswer, ...distractors]);
-
-  return {
-    type: "multiple choice",
-    question: `Choose the best word to complete the statement: ${prompt}`,
-    choices,
-    correctAnswer,
-  };
-};
-
-const makeTrueFalseQuestion = (sentence: string): Question => {
-  const isTrue = Math.random() > 0.5;
-  if (isTrue) {
-    return {
-      type: "true or false",
-      question: `True or False: ${sentence}`,
-      correctAnswer: true,
-    };
-  }
-
-  const words = sentence.split(" ");
-  if (words.length > 6) {
-    words[words.length - 2] = "not";
-  }
-
-  return {
-    type: "true or false",
-    question: `True or False: ${words.join(" ")}`,
-    correctAnswer: false,
-  };
-};
-
-const makeFillBlankQuestion = (sentence: string): Question => {
-  const blankWord = pickBlankWord(sentence) || "keyword";
-  return {
-    type: "fill-in-the-blank",
-    question: sentence.replace(new RegExp(`\\b${blankWord}\\b`, "i"), "_____"),
-  };
-};
-
-const makeTheoryQuestion = (sentence: string): Question => ({
-  type: "theory",
-  question: `Explain this concept from the document in your own words: ${sentence}`,
-});
-
-const generateOfflineFallbackQuestions = (
-  text: string,
-  settings: TestSettings,
-  count: number,
-): Question[] => {
-  const sentences = splitIntoSentences(text);
-  const wordPool = extractWordPool(text);
-
-  const fallbackSource =
-    sentences.length > 0
-      ? sentences
-      : [
-          "Summarize the key ideas from this uploaded material.",
-          "Identify a major concept discussed in this document.",
-          "Explain one important fact from the document.",
-        ];
-
-  const questions: Question[] = [];
-  const orderedTypes: Array<Question["type"]> =
-    settings.questionType.length > 0
-      ? settings.questionType
-      : AVAILABLE_QUESTION_TYPES;
-
-  for (let index = 0; index < count; index++) {
-    const sentence = fallbackSource[index % fallbackSource.length];
-    const targetType = orderedTypes[index % orderedTypes.length];
-
-    if (targetType === "multiple choice") {
-      questions.push(makeMultipleChoiceQuestion(sentence, wordPool));
-    } else if (targetType === "true or false") {
-      questions.push(makeTrueFalseQuestion(sentence));
-    } else if (targetType === "fill-in-the-blank") {
-      questions.push(makeFillBlankQuestion(sentence));
-    } else {
-      questions.push(makeTheoryQuestion(sentence));
-    }
-  }
-
-  return uniqueQuestions(questions);
-};
+const parsingSteps = [
+  "Reading file...",
+  "Extracting text...",
+  "Cleaning up content...",
+];
 
 function RecentDocuments({
   onSelect,
@@ -306,12 +125,14 @@ function RecentDocuments({
   const [recentDocs, setRecentDocs] = useState<CachedDocument[]>([]);
   const [showAll, setShowAll] = useState(false);
 
-  const updateDocs = () => {
-    setRecentDocs(getRecentDocuments());
+  const updateDocs = async () => {
+    const docs = await getRecentDocuments();
+    setRecentDocs(docs);
   };
 
   useEffect(() => {
     updateDocs();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   if (recentDocs.length === 0) {
@@ -359,10 +180,10 @@ function RecentDocuments({
             <AlertDialogFooter>
               <AlertDialogCancel>Cancel</AlertDialogCancel>
               <AlertDialogAction
-                onClick={() => {
-                  clearAllRecentDocuments();
+                onClick={async () => {
+                  await clearAllRecentDocuments();
                   setShowAll(false);
-                  updateDocs();
+                  await updateDocs();
                 }}
               >
                 Clear All
@@ -383,10 +204,10 @@ function RecentDocuments({
               type="button"
               aria-label={`Remove ${doc.name}`}
               className="absolute top-2 right-2 z-10 rounded-md p-1 text-muted-foreground opacity-40 hover:opacity-100 hover:bg-destructive/10 hover:text-destructive transition"
-              onClick={(event) => {
+              onClick={async (event) => {
                 event.stopPropagation();
-                removeRecentDocument(doc.id);
-                updateDocs();
+                await removeRecentDocument(doc.id);
+                await updateDocs();
               }}
             >
               <X className="w-3.5 h-3.5" />
@@ -435,10 +256,6 @@ export function UploadView({
   onDocumentUploaded,
   onTestGenerated,
   existingDocument,
-  preloadActivationId = 0,
-  sharedPreload = null,
-  sharedPreloadStatus = "idle",
-  onSharedPreloadChange,
 }: UploadViewProps) {
   const { toast } = useToast();
   const [file, setFile] = useState<File | null>(
@@ -460,15 +277,11 @@ export function UploadView({
   const [isParsing, setIsParsing] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const [parsingProgress, setParsingProgress] = useState<number | null>(null);
-  const [generationProgress, setGenerationProgress] = useState(0);
-  const [preloadStatus, setPreloadStatus] =
-    useState<PreloadStatus>(sharedPreloadStatus);
-  const [preloadedEntry, setPreloadedEntry] = useState<PreloadEntry | null>(
-    sharedPreload,
-  );
   const [manualText, setManualText] = useState("");
+  const [crossDocEnabled, setCrossDocEnabled] = useState(false);
+  const [selectedDocIds, setSelectedDocIds] = useState<string[]>([]);
+  const [recentDocs, setRecentDocs] = useState<CachedDocument[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const preloadVersionRef = useRef(0);
 
   const isTestCreationMode = !!existingDocument;
 
@@ -497,150 +310,28 @@ export function UploadView({
         ? "All question types"
         : `${settings.questionType.length} selected`;
 
-  const getPreloadKey = () => {
-    if (!existingDocument) {
-      return "";
-    }
-
-    const normalizedTopicFocus = (settings.topicFocus || "")
-      .trim()
-      .toLowerCase();
-    const sortedTypes = [...settings.questionType].sort();
-    const documentSignature = `${existingDocument.file.name}:${existingDocument.text.length}:${existingDocument.text.slice(0, 120)}`;
-
-    return JSON.stringify({
-      documentSignature,
-      questionTypes: sortedTypes,
-      topicFocus: normalizedTopicFocus,
-      difficulty: settings.difficulty,
-      questionSource: settings.questionSource,
-    });
-  };
-
-  const currentPreloadKey = getPreloadKey();
-
-  const syncPreloadState = (
-    entry: PreloadEntry | null,
-    status: PreloadStatus,
-  ) => {
-    setPreloadedEntry(entry);
-    setPreloadStatus(status);
-    onSharedPreloadChange?.(entry, status);
-  };
-
-  useEffect(() => {
-    if (!sharedPreload || sharedPreload.key !== currentPreloadKey) {
-      return;
-    }
-
-    setPreloadedEntry(sharedPreload);
-    setPreloadStatus(sharedPreloadStatus);
-  }, [sharedPreload, sharedPreloadStatus, currentPreloadKey]);
-
-  useEffect(() => {
-    if (
-      !isTestCreationMode ||
-      preloadActivationId === 0 ||
-      !existingDocument ||
-      settings.questionType.length === 0
-    ) {
-      return;
-    }
-
-    const now = Date.now();
-    const cached =
-      sharedPreload && sharedPreload.key === currentPreloadKey
-        ? sharedPreload
-        : null;
-
-    if (cached && now - cached.createdAt <= PRELOAD_CACHE_TTL_MS) {
-      syncPreloadState(cached, "cache-hit");
-      return;
-    }
-
-    syncPreloadState(null, "scheduled");
-
-    let isDisposed = false;
-    const preloadVersion = ++preloadVersionRef.current;
-
-    const timer = setTimeout(async () => {
-      if (isDisposed || preloadVersion !== preloadVersionRef.current) {
-        return;
-      }
-
-      syncPreloadState(null, "preloading");
-
-      try {
-        let effectiveDocumentText = existingDocument.text;
-
-        if (settings.topicFocus?.trim()) {
-          const extracted = await extractTopicSection({
-            documentContent: existingDocument.text,
-            topicFocus: settings.topicFocus.trim(),
-          });
-
-          if (isDisposed || preloadVersion !== preloadVersionRef.current) {
-            return;
-          }
-
-          effectiveDocumentText =
-            extracted.extractedText?.trim() || existingDocument.text;
-        }
-
-        const result = await generateBatchTestQuestions({
-          documentContent: pickRandomDocumentChunk(effectiveDocumentText),
-          questionTypes: settings.questionType,
-          difficulty: settings.difficulty,
-          questionSource: settings.questionSource,
-          existingQuestions: [],
-          batchSize: INITIAL_BATCH_SIZE,
-        });
-
-        if (isDisposed || preloadVersion !== preloadVersionRef.current) {
-          return;
-        }
-
-        const deduped = uniqueQuestions(result.questions as Question[]);
-        if (deduped.length === 0) {
-          throw new Error("No preload questions generated");
-        }
-
-        const entry: PreloadEntry = {
-          key: currentPreloadKey,
-          createdAt: Date.now(),
-          questions: deduped,
-          effectiveDocumentText,
-        };
-
-        syncPreloadState(entry, "ready");
-      } catch (error) {
-        if (isDisposed || preloadVersion !== preloadVersionRef.current) {
-          return;
-        }
-
-        console.warn("Preload failed", error);
-        syncPreloadState(null, "error");
-      }
-    }, PRELOAD_DELAY_MS);
-
-    return () => {
-      isDisposed = true;
-      clearTimeout(timer);
-    };
-  }, [
-    isTestCreationMode,
-    preloadActivationId,
-    existingDocument,
-    sharedPreload,
-    currentPreloadKey,
-    settings.topicFocus,
-    settings.questionType,
-    settings.difficulty,
-    settings.questionSource,
-  ]);
-
   // Show warning for 20+ questions
   const showWarning = settings.numberOfQuestions >= WARNING_THRESHOLD;
+
+  // Load recent docs for cross-document mode
+  useEffect(() => {
+    if (!isTestCreationMode) return;
+    let cancelled = false;
+    (async () => {
+      const docs = await getRecentDocuments();
+      if (cancelled) return;
+      setRecentDocs(
+        docs.filter(
+          (d) =>
+            d.id !== existingDocument?.file.name &&
+            d.text !== existingDocument?.text,
+        ),
+      );
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isTestCreationMode, existingDocument]);
 
   // Beforeunload warning when generating
   useEffect(() => {
@@ -657,7 +348,7 @@ export function UploadView({
   }, [isLoading, isTestCreationMode]);
 
   useEffect(() => {
-    let interval: NodeJS.Timeout;
+    let interval: ReturnType<typeof setInterval> | undefined;
     if (isParsing) {
       interval = setInterval(() => {
         setLoadingMessage((prev) => {
@@ -671,7 +362,9 @@ export function UploadView({
         });
       }, 1500);
     }
-    return () => clearInterval(interval);
+    return () => {
+      if (interval !== undefined) clearInterval(interval);
+    };
   }, [isParsing]);
 
   const isLikelyScannedPdf = (text: string, pageCount: number) => {
@@ -857,7 +550,7 @@ export function UploadView({
         "application/vnd.openxmlformats-officedocument.presentationml.presentation"
       ) {
         const zip = await JSZip.loadAsync(arrayBufferResult);
-        const slideTexts: string[] = [];
+        const slides: Array<{ text: string; num: number }> = [];
         const slidePromises: Promise<void>[] = [];
 
         zip.folder("ppt/slides")?.forEach((relativePath, file) => {
@@ -871,13 +564,14 @@ export function UploadView({
               const textNodes = xmlDoc.getElementsByTagName("a:t");
               let slideText = "";
               for (let i = 0; i < textNodes.length; i++) {
-                slideText += textNodes[i].textContent + " ";
+                const nodeText = textNodes[i].textContent;
+                if (nodeText) slideText += nodeText + " ";
               }
               const slideNumMatch = relativePath.match(/slide(\d+)\.xml/);
               const slideNum = slideNumMatch
                 ? parseInt(slideNumMatch[1], 10)
                 : 999;
-              slideTexts.push({ text: slideText.trim(), num: slideNum } as any);
+              slides.push({ text: slideText.trim(), num: slideNum });
             });
             slidePromises.push(promise);
           }
@@ -885,7 +579,7 @@ export function UploadView({
 
         await Promise.all(slidePromises);
 
-        text = (slideTexts as any[])
+        text = slides
           .sort((a, b) => a.num - b.num)
           .map((s) => s.text)
           .join("\n\n");
@@ -919,7 +613,7 @@ export function UploadView({
         id: `${selectedFile.name}-${selectedFile.lastModified}`,
         lastModified: selectedFile.lastModified,
         text: text,
-      });
+      }).catch((err) => console.error("Failed to persist recent document:", err));
 
       onDocumentUploaded(text, fileInfo);
     } catch (error) {
@@ -962,7 +656,7 @@ export function UploadView({
       size: pastedDocumentSize,
       lastModified: now,
       text: trimmedText,
-    });
+    }).catch((err) => console.error("Failed to persist recent document:", err));
 
     onDocumentUploaded(trimmedText, {
       name: pastedDocumentName,
@@ -976,7 +670,6 @@ export function UploadView({
     setIsLoading(false);
     setIsParsing(false);
     setParsingProgress(null);
-    setGenerationProgress(0);
     if (title !== "AI Service Unavailable" && !isTestCreationMode) {
       setFile(null);
       if (fileInputRef.current) {
@@ -1018,25 +711,54 @@ export function UploadView({
       return;
     }
 
-    setIsLoading(true);
-    setGenerationProgress(0);
+    if (crossDocEnabled && selectedDocIds.length === 0) {
+      toast({
+        variant: "destructive",
+        title: "No Additional Documents Selected",
+        description: "Select at least one additional document for cross-document quizzing.",
+      });
+      return;
+    }
 
-    setLoadingMessage(`Generating initial ${INITIAL_BATCH_SIZE} questions...`);
+    setIsLoading(true);
+
+    setLoadingMessage("Generating first question...");
 
     try {
       let effectiveDocumentText = existingDocument.text;
-      const activePreload =
-        preloadedEntry && preloadedEntry.key === currentPreloadKey
-          ? preloadedEntry
-          : null;
-      let result: { questions: Question[] } | null = null;
 
-      if (activePreload) {
-        effectiveDocumentText = activePreload.effectiveDocumentText;
-        result = { questions: activePreload.questions };
+      // Cross-document mode
+      if (crossDocEnabled && selectedDocIds.length > 0) {
+        const additionalDocs = await getMultipleRecentDocuments(selectedDocIds);
+        const allDocs = [
+          { name: existingDocument.file.name, content: existingDocument.text },
+          ...additionalDocs.map((d) => ({ name: d.name, content: d.text })),
+        ];
+
+        // Build combined effective text with doc markers
+        effectiveDocumentText = allDocs
+          .map((d, i) => `--- DOCUMENT ${i + 1}: ${d.name} ---\n${d.content}`)
+          .join('\n\n');
+
+        setLoadingMessage("Generating cross-document questions...");
+        const result = await generateCrossDocumentQuestions({
+          documents: allDocs,
+          questionTypes: settings.questionType,
+          difficulty: settings.difficulty,
+          questionSource: settings.questionSource,
+          numberOfQuestions: Math.min(settings.numberOfQuestions, 10),
+          existingQuestions: [],
+        });
+
+        if (!result.questions || result.questions.length === 0) {
+          throw new Error("Failed to generate cross-document questions.");
+        }
+
+        onTestGenerated(result.questions as Question[], settings, effectiveDocumentText);
+        return;
       }
 
-      if (!result && settings.topicFocus?.trim()) {
+      if (settings.topicFocus?.trim()) {
         setLoadingMessage("Finding relevant section...");
         const extracted = await extractTopicSection({
           documentContent: existingDocument.text,
@@ -1047,30 +769,30 @@ export function UploadView({
           extracted.extractedText?.trim() || existingDocument.text;
       }
 
+      let firstQuestion: Question | null = null;
       let attempt = 0;
 
-      while (attempt <= INITIAL_GENERATION_MAX_RETRIES && !result) {
+      while (attempt <= INITIAL_GENERATION_MAX_RETRIES && !firstQuestion) {
         try {
           const timeoutPromise = new Promise<never>((_, reject) =>
             setTimeout(
-              () => reject(new Error("Initial generation timeout")),
+              () => reject(new Error("Generation timeout")),
               INITIAL_GENERATION_TIMEOUT,
             ),
           );
 
-          const generationPromise = generateBatchTestQuestions({
+          const generationPromise = generateSingleTestQuestion({
             documentContent: pickRandomDocumentChunk(effectiveDocumentText),
             questionTypes: settings.questionType,
             difficulty: settings.difficulty,
             questionSource: settings.questionSource,
             existingQuestions: [],
-            batchSize: INITIAL_BATCH_SIZE,
           });
 
-          result = (await Promise.race([
+          firstQuestion = (await Promise.race([
             generationPromise,
             timeoutPromise,
-          ])) as { questions: Question[] };
+          ])) as Question;
         } catch (error) {
           const errorMessage = ((error as Error)?.message || "").toLowerCase();
           const isRetryable =
@@ -1078,7 +800,6 @@ export function UploadView({
             errorMessage.includes("fetch") ||
             errorMessage.includes("network") ||
             errorMessage.includes("503") ||
-            errorMessage.includes("server") ||
             errorMessage.includes("overloaded");
 
           if (!isRetryable || attempt >= INITIAL_GENERATION_MAX_RETRIES) {
@@ -1089,33 +810,18 @@ export function UploadView({
           toast({
             variant: "destructive",
             title: "Generation Failed",
-            description: `Retrying question generation... (${attempt}/${INITIAL_GENERATION_MAX_RETRIES})`,
+            description: `Retrying... (${attempt}/${INITIAL_GENERATION_MAX_RETRIES})`,
           });
           await new Promise((resolve) => setTimeout(resolve, 2000));
         }
       }
 
-      if (!result) {
-        throw new Error("Initial question generation failed after retries.");
+      if (!firstQuestion) {
+        throw new Error("Failed to generate first question.");
       }
 
-      const dedupedQuestions = uniqueQuestions(result.questions as Question[]);
-
-      setGenerationProgress(100);
-
-      // Check if we generated minimum required questions
-      if (dedupedQuestions.length < MIN_QUESTIONS) {
-        handleError(
-          `Unable to generate minimum ${MIN_QUESTIONS} unique questions. Please try again or reduce document size.`,
-          "Insufficient Questions Generated",
-        );
-        return;
-      }
-
-      // Success! Move to test view
-      onTestGenerated(dedupedQuestions, settings, effectiveDocumentText);
+      onTestGenerated([firstQuestion], settings, effectiveDocumentText);
     } catch (error) {
-      console.error(error);
       const errorMessage =
         (error as Error)?.message || "An unknown error occurred.";
       const errorText = errorMessage.toLowerCase();
@@ -1124,8 +830,7 @@ export function UploadView({
       );
       const isRateLimitError = errorMessage.includes("429");
       const isServiceUnavailable =
-        errorMessage.includes("503") ||
-        errorMessage.toLowerCase().includes("overloaded");
+        errorMessage.includes("503") || errorText.includes("overloaded");
       const isNetworkFailure =
         errorText.includes("failed to fetch") ||
         errorText.includes("fetch") ||
@@ -1153,27 +858,26 @@ export function UploadView({
       }
     } finally {
       setIsLoading(false);
-      setGenerationProgress(0);
     }
   };
 
-  const handleDragEnter = (e: React.DragEvent<HTMLDivElement>) => {
+  const handleDragEnter = (e: DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     e.stopPropagation();
     if (isTestCreationMode) return;
     setIsDragging(true);
   };
-  const handleDragLeave = (e: React.DragEvent<HTMLDivElement>) => {
+  const handleDragLeave = (e: DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     e.stopPropagation();
     if (isTestCreationMode) return;
     setIsDragging(false);
   };
-  const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
+  const handleDragOver = (e: DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     e.stopPropagation();
   };
-  const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
+  const handleDrop = (e: DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     e.stopPropagation();
     if (isTestCreationMode) return;
@@ -1448,32 +1152,78 @@ export function UploadView({
               )}
             </div>
 
-            {/* Generation Progress */}
-            {!isLoading && (
-              <div className="text-xs text-muted-foreground">
-                {preloadStatus === "scheduled" && "Preload scheduled..."}
-                {preloadStatus === "preloading" &&
-                  "Preloading first 5 questions..."}
-                {preloadStatus === "ready" &&
-                  `Preloaded ${preloadedEntry?.questions.length ?? 0} questions.`}
-                {preloadStatus === "cache-hit" &&
-                  `Reused ${preloadedEntry?.questions.length ?? 0} cached questions.`}
-                {preloadStatus === "error" &&
-                  "Preload failed. Generate Test will still work normally."}
+            {/* Cross-Document Section */}
+            <div className="space-y-4 pt-2 border-t">
+              <div className="flex items-center space-x-2">
+                <Switch
+                  id="cross-doc-enabled"
+                  checked={crossDocEnabled}
+                  onCheckedChange={(checked) => {
+                    setCrossDocEnabled(checked);
+                    if (!checked) setSelectedDocIds([]);
+                  }}
+                  disabled={isLoading || recentDocs.length === 0}
+                />
+                <Label
+                  htmlFor="cross-doc-enabled"
+                  className="flex items-center gap-2"
+                >
+                  <FileText className="w-4 h-4" /> Cross-Document Quizzing
+                </Label>
               </div>
-            )}
-
-            {isLoading && (
-              <div className="space-y-3 animate-in fade-in-50 duration-300">
-                <div className="flex items-center justify-between text-sm">
-                  <span className="text-muted-foreground">
-                    Generating initial questions...
-                  </span>
-                  <span className="font-semibold">{generationProgress}%</span>
+              {crossDocEnabled && (
+                <div className="pl-8 space-y-3 animate-in fade-in-50 duration-300">
+                  <p className="text-xs text-muted-foreground">
+                    Select additional documents to generate questions that span
+                    multiple sources.
+                  </p>
+                  {recentDocs.length === 0 ? (
+                    <p className="text-xs text-muted-foreground">
+                      No other recent documents available. Upload more documents
+                      first.
+                    </p>
+                  ) : (
+                    <ScrollArea className="max-h-48 rounded-md border p-2">
+                      <div className="space-y-1">
+                        {recentDocs.map((doc) => (
+                          <div
+                            key={doc.id}
+                            className="flex items-center gap-2 p-2 rounded-md hover:bg-muted/50 cursor-pointer"
+                            onClick={() => {
+                              setSelectedDocIds((prev) =>
+                                prev.includes(doc.id)
+                                  ? prev.filter((id) => id !== doc.id)
+                                  : [...prev, doc.id],
+                              );
+                            }}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={selectedDocIds.includes(doc.id)}
+                              onChange={() => {}}
+                              className="h-4 w-4"
+                            />
+                            <div className="flex-grow min-w-0">
+                              <p className="text-sm truncate">{doc.name}</p>
+                              <p className="text-xs text-muted-foreground">
+                                {(doc.size / 1024).toFixed(0)} KB
+                              </p>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </ScrollArea>
+                  )}
+                  {selectedDocIds.length > 0 && (
+                    <p className="text-xs text-muted-foreground">
+                      {selectedDocIds.length + 1} document
+                      {(selectedDocIds.length + 1) > 1 ? "s" : ""} selected
+                      (including current)
+                    </p>
+                  )}
                 </div>
-                <Progress value={generationProgress} className="h-2" />
-              </div>
-            )}
+              )}
+            </div>
           </CardContent>
           <CardFooter>
             <Button

@@ -6,6 +6,7 @@ import { UploadView } from "@/components/app/upload-view";
 import { StudyView } from "@/components/app/study-view";
 import { TestView } from "@/components/app/test-view";
 import { ResultsView } from "@/components/app/results-view";
+import { SummaryView } from "@/components/app/summary-view";
 import { Toaster } from "@/components/ui/toaster";
 import {
   AlertDialog,
@@ -17,18 +18,19 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import type { TestResult, TestSettings, Question } from "@/lib/types";
+import { loadTestProgress, clearTestProgress } from "@/lib/storage";
+import type { StoredTestProgress, TestResult, TestSettings, Question } from "@/lib/types";
 
-const TEST_PROGRESS_KEY = "studybuddy-active-test-progress";
-
-type StoredTestProgress = {
+// The shape of restored progress we use in this component — narrows the
+// generic StoredTestProgress type from storage.ts to typed Question/TestSettings.
+type RestoredTestProgress = {
   docSignature?: string;
   settingsSignature?: string;
   questions?: Question[];
   settings?: TestSettings;
   documentInfo?: {
     text: string;
-    file: { name: string; type: string; size: number };
+    file?: { name: string; type: string; size: number };
   };
   effectiveDocumentText?: string;
   currentQuestionIndex?: number;
@@ -57,24 +59,9 @@ type TestRestoreSnapshot = {
   generatedQuestionCount: number;
 };
 
-type SharedPreloadEntry = {
-  key: string;
-  createdAt: number;
-  questions: Question[];
-  effectiveDocumentText: string;
-};
-
-type SharedPreloadStatus =
-  | "idle"
-  | "scheduled"
-  | "preloading"
-  | "ready"
-  | "cache-hit"
-  | "error";
-
 export default function Home() {
   const [view, setView] = useState<
-    "upload" | "studying" | "testing" | "results"
+    "upload" | "studying" | "summarizing" | "testing" | "results"
   >("upload");
   const [documentInfo, setDocumentInfo] = useState<{
     text: string;
@@ -87,73 +74,68 @@ export default function Home() {
   const [totalGeneratedQuestions, setTotalGeneratedQuestions] =
     useState<number>(0);
   const [pendingRestore, setPendingRestore] =
-    useState<StoredTestProgress | null>(null);
+    useState<RestoredTestProgress | null>(null);
   const [restoreSnapshot, setRestoreSnapshot] =
     useState<TestRestoreSnapshot | null>(null);
   const [showRestoredSessionNotice, setShowRestoredSessionNotice] =
     useState(false);
-  const [preloadActivationId, setPreloadActivationId] = useState(0);
-  const [sharedPreload, setSharedPreload] = useState<{
-    entry: SharedPreloadEntry | null;
-    status: SharedPreloadStatus;
-  }>({
-    entry: null,
-    status: "idle",
-  });
 
   useEffect(() => {
-    if (typeof window === "undefined") {
-      return;
-    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const parsed = await loadTestProgress();
+        if (cancelled || !parsed) return;
 
-    try {
-      const stored = window.localStorage.getItem(TEST_PROGRESS_KEY);
-      if (!stored) {
-        return;
+        if (
+          !parsed.documentInfo ||
+          !parsed.settings ||
+          !Array.isArray(parsed.questions) ||
+          parsed.questions.length === 0
+        ) {
+          return;
+        }
+
+        const typed = parsed as RestoredTestProgress;
+        const questions = typed.questions ?? [];
+        if (questions.length === 0) return;
+
+        const boundedIndex =
+          typeof typed.currentQuestionIndex === "number"
+            ? Math.max(
+                0,
+                Math.min(
+                  typed.currentQuestionIndex,
+                  questions.length - 1,
+                ),
+              )
+            : 0;
+
+        setPendingRestore({
+          ...typed,
+          questions,
+          currentQuestionIndex: boundedIndex,
+          results: Array.isArray(typed.results) ? typed.results : [],
+          currentResult: typed.currentResult ?? null,
+          userAnswer:
+            typeof typed.userAnswer === "string" ? typed.userAnswer : "",
+          isAnswered: Boolean(typed.isAnswered),
+          timeLeft:
+            typeof typed.timeLeft === "number" || typed.timeLeft === null
+              ? typed.timeLeft
+              : null,
+          generatedQuestionCount:
+            typeof typed.generatedQuestionCount === "number"
+              ? typed.generatedQuestionCount
+              : questions.length,
+        });
+      } catch (error) {
+        console.error("Failed to restore test session in page:", error);
       }
-
-      const parsed = JSON.parse(stored) as StoredTestProgress;
-
-      if (
-        !parsed.documentInfo ||
-        !parsed.settings ||
-        !Array.isArray(parsed.questions) ||
-        parsed.questions.length === 0
-      ) {
-        return;
-      }
-
-      const boundedIndex =
-        typeof parsed.currentQuestionIndex === "number"
-          ? Math.max(
-              0,
-              Math.min(
-                parsed.currentQuestionIndex,
-                parsed.questions.length - 1,
-              ),
-            )
-          : 0;
-
-      setPendingRestore({
-        ...parsed,
-        currentQuestionIndex: boundedIndex,
-        results: Array.isArray(parsed.results) ? parsed.results : [],
-        currentResult: parsed.currentResult ?? null,
-        userAnswer:
-          typeof parsed.userAnswer === "string" ? parsed.userAnswer : "",
-        isAnswered: Boolean(parsed.isAnswered),
-        timeLeft:
-          typeof parsed.timeLeft === "number" || parsed.timeLeft === null
-            ? parsed.timeLeft
-            : null,
-        generatedQuestionCount:
-          typeof parsed.generatedQuestionCount === "number"
-            ? parsed.generatedQuestionCount
-            : parsed.questions.length,
-      });
-    } catch (error) {
-      console.error("Failed to restore test session in page:", error);
-    }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const handleContinueSavedTest = () => {
@@ -181,7 +163,14 @@ export default function Home() {
       ? pendingRestore.results
       : [];
 
-    setDocumentInfo(pendingRestore.documentInfo);
+    setDocumentInfo({
+      text: pendingRestore.documentInfo.text,
+      file: pendingRestore.documentInfo.file ?? {
+        name: "restored-document",
+        type: "text/plain",
+        size: pendingRestore.documentInfo.text.length,
+      },
+    });
     setTestSettings(pendingRestore.settings);
     setInitialQuestions(pendingRestore.questions);
     setEffectiveDocumentText(
@@ -213,9 +202,9 @@ export default function Home() {
   };
 
   const handleStartFreshInstead = () => {
-    if (typeof window !== "undefined") {
-      window.localStorage.removeItem(TEST_PROGRESS_KEY);
-    }
+    clearTestProgress().catch((err) =>
+      console.error("Failed to clear test progress:", err),
+    );
     setPendingRestore(null);
     setRestoreSnapshot(null);
     setShowRestoredSessionNotice(false);
@@ -227,15 +216,17 @@ export default function Home() {
   ) => {
     setDocumentInfo({ text: docText, file: docFile });
     setEffectiveDocumentText(docText);
-    setSharedPreload({ entry: null, status: "idle" });
     setRestoreSnapshot(null);
     setShowRestoredSessionNotice(false);
     setView("studying");
   };
 
   const handleStartTestCreation = () => {
-    setPreloadActivationId((prev) => prev + 1);
     setView("upload"); // Reuse upload view for test settings
+  };
+
+  const handleSummarize = () => {
+    setView("summarizing");
   };
 
   const handleTestGenerated = (
@@ -246,7 +237,6 @@ export default function Home() {
     setInitialQuestions(generatedQuestions);
     setTestSettings(settings);
     setEffectiveDocumentText(nextEffectiveDocumentText);
-    setSharedPreload({ entry: null, status: "idle" });
     setRestoreSnapshot(null);
     setShowRestoredSessionNotice(false);
     setView("testing");
@@ -270,7 +260,6 @@ export default function Home() {
     setEffectiveDocumentText("");
     setTotalGeneratedQuestions(0);
     setPendingRestore(null);
-    setSharedPreload({ entry: null, status: "idle" });
     setRestoreSnapshot(null);
     setShowRestoredSessionNotice(false);
   };
@@ -283,12 +272,6 @@ export default function Home() {
             onDocumentUploaded={handleDocumentUploaded}
             onTestGenerated={handleTestGenerated}
             existingDocument={documentInfo}
-            preloadActivationId={preloadActivationId}
-            sharedPreload={sharedPreload.entry}
-            sharedPreloadStatus={sharedPreload.status}
-            onSharedPreloadChange={(entry, status) =>
-              setSharedPreload({ entry, status })
-            }
           />
         );
       case "studying":
@@ -297,6 +280,18 @@ export default function Home() {
             <StudyView
               document={documentInfo.file}
               documentText={documentInfo.text}
+              onStartTest={handleStartTestCreation}
+              onStartNew={handleStartNew}
+              onSummarize={handleSummarize}
+            />
+          )
+        );
+      case "summarizing":
+        return (
+          documentInfo && (
+            <SummaryView
+              documentText={documentInfo.text}
+              document={documentInfo.file}
               onStartTest={handleStartTestCreation}
               onStartNew={handleStartNew}
             />
@@ -331,12 +326,6 @@ export default function Home() {
           <UploadView
             onDocumentUploaded={handleDocumentUploaded}
             onTestGenerated={handleTestGenerated}
-            preloadActivationId={0}
-            sharedPreload={sharedPreload.entry}
-            sharedPreloadStatus={sharedPreload.status}
-            onSharedPreloadChange={(entry, status) =>
-              setSharedPreload({ entry, status })
-            }
           />
         );
     }

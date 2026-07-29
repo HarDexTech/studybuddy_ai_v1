@@ -1,10 +1,11 @@
 "use server";
 /**
- * @fileOverview A flow to validate a user's answer to a question.
+ * @fileOverview Validate a user's answer to a question.
  */
 
-import { ai, withDualGeminiFallback } from "@/ai/genkit";
-import { z } from "genkit";
+import { callNimJson } from "@/ai/api";
+import { RateLimitPresets, enforceRateLimit } from "@/lib/rate-limit";
+import { z } from "zod";
 
 const ValidateUserAnswerInputSchema = z.object({
   documentContent: z
@@ -17,25 +18,18 @@ const ValidateUserAnswerInputSchema = z.object({
     .enum(["strict", "formed"])
     .describe("The marking mode used for grading tolerance."),
 });
-export type ValidateUserAnswerInput = z.infer<
-  typeof ValidateUserAnswerInputSchema
->;
+export type ValidateUserAnswerInput = z.infer<typeof ValidateUserAnswerInputSchema>;
 
 const ValidateUserAnswerOutputSchema = z.object({
   isCorrect: z.boolean().describe("Whether the user's answer is correct."),
   feedback: z.string().describe("Feedback on the user's answer."),
 });
-export type ValidateUserAnswerOutput = z.infer<
-  typeof ValidateUserAnswerOutputSchema
->;
+export type ValidateUserAnswerOutput = z.infer<typeof ValidateUserAnswerOutputSchema>;
 
-export async function validateUserAnswer(
-  input: ValidateUserAnswerInput,
-): Promise<ValidateUserAnswerOutput> {
-  const systemInstruction =
-    "You are a study assistant that validates user answers to questions.";
+const SYSTEM = "You are a study assistant that validates user answers to questions.";
 
-  const userPrompt = `Evaluate whether the user's answer is correct by comparing it to the correct answer and the document content.
+const USER_PROMPT = (input: ValidateUserAnswerInput) =>
+  `Evaluate whether the user's answer is correct by comparing it to the correct answer and the document content.
 
 If the provided correct answer is missing, empty, or unclear, first infer the best expected answer from the question.
 When the document does not contain enough information, use reliable general subject knowledge to infer the expected answer.
@@ -57,65 +51,37 @@ ${input.documentContent}
 Determine if the user's answer is correct (it doesn't need to be word-for-word, but should convey the same meaning).
 Provide helpful feedback.
 
-Return ONLY valid JSON in this format:
+Return ONLY valid JSON in this exact format with no markdown:
 {
-  "isCorrect": true or false,
+  "isCorrect": true,
   "feedback": "your feedback here"
 }`;
 
-  return withDualGeminiFallback(
-    async () => {
-      return await validateUserAnswerFlow(input);
-    },
-    {
-      systemInstruction,
-      userPrompt,
-      parseResponse: (rawResponse: string) => {
-        const cleaned = rawResponse
-          .replace(/```json\n?/g, "")
-          .replace(/```\n?/g, "")
-          .trim();
-        return JSON.parse(cleaned) as ValidateUserAnswerOutput;
-      },
-    },
-  );
-}
-
-const prompt = ai.definePrompt({
-  name: "validateUserAnswerPrompt",
-  input: { schema: ValidateUserAnswerInputSchema },
-  output: { schema: ValidateUserAnswerOutputSchema },
-  prompt: `You are a study assistant that validates user answers to questions.
-
-Evaluate whether the user's answer is correct by comparing it to the correct answer and the document content.
-
-If the provided correct answer is missing, empty, or unclear, first infer the best expected answer from the question.
-When the document does not contain enough information, use reliable general subject knowledge to infer the expected answer.
-Then grade the user's answer against that inferred expected answer.
-
-Marking Mode: {{questionSource}}
-- If mode is "strict": require close factual alignment, key terminology, and high precision.
-- If mode is "formed": allow semantically equivalent paraphrases and concept-level correctness even if wording differs.
-
-Question: {{question}}
-User's Answer: {{userAnswer}}
-Correct Answer: {{correctAnswer}}
-
-Document Content:
-\`\`\`
-{{{documentContent}}}
-\`\`\`
-
-Determine if the user's answer is correct (it doesn't need to be word-for-word, but should convey the same meaning).
-Provide helpful feedback.
-`,
-});
-
-const validateUserAnswerFlow = async (
+export async function validateUserAnswer(
   input: ValidateUserAnswerInput,
-): Promise<ValidateUserAnswerOutput> => {
-  const { output } = await prompt(input, {
-    model: "googleai/gemini-2.5-flash",
+): Promise<ValidateUserAnswerOutput> {
+  await enforceRateLimit(RateLimitPresets.answerValidation);
+  return callNimJson(SYSTEM, USER_PROMPT(input), (raw) => {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (error) {
+      throw new Error(
+        `Failed to parse validation response: ${
+          error instanceof Error ? error.message : "unknown error"
+        }. Response preview: ${raw.slice(0, 200)}`,
+      );
+    }
+    if (
+      parsed === null ||
+      typeof parsed !== "object" ||
+      typeof (parsed as { isCorrect?: unknown }).isCorrect !== "boolean" ||
+      typeof (parsed as { feedback?: unknown }).feedback !== "string"
+    ) {
+      throw new Error(
+        `Missing or invalid isCorrect/feedback fields. Response preview: ${raw.slice(0, 200)}`,
+      );
+    }
+    return parsed as ValidateUserAnswerOutput;
   });
-  return output!;
-};
+}

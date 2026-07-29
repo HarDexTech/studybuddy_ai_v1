@@ -3,8 +3,9 @@
  * @fileOverview Extract a chapter/topic-focused section from a document.
  */
 
-import { ai, withDualGeminiFallback } from '@/ai/genkit';
-import { z } from 'genkit';
+import { callNimJson } from '@/ai/api';
+import { RateLimitPresets, enforceRateLimit } from '@/lib/rate-limit';
+import { z } from 'zod';
 
 const ExtractTopicSectionInputSchema = z.object({
   documentContent: z.string().describe('The full text content of the study document.'),
@@ -17,10 +18,10 @@ const ExtractTopicSectionOutputSchema = z.object({
 });
 export type ExtractTopicSectionOutput = z.infer<typeof ExtractTopicSectionOutputSchema>;
 
-export async function extractTopicSection(input: ExtractTopicSectionInput): Promise<ExtractTopicSectionOutput> {
-  const systemInstruction = 'You are a precise document extraction assistant. Return relevant text verbatim.';
+const SYSTEM = 'You are a precise document extraction assistant. Return relevant text verbatim.';
 
-  const userPrompt = `Read the document and identify the section that best matches the user's requested focus.
+const USER_PROMPT = (input: ExtractTopicSectionInput) =>
+  `Read the document and identify the section that best matches the user's requested focus.
 
 Focus request: ${input.topicFocus}
 
@@ -35,58 +36,33 @@ Document Content:
 ${input.documentContent}
 \`\`\`
 
-Return ONLY valid JSON in this format:
+Return ONLY valid JSON in this exact format with no markdown:
 {
   "extractedText": "..."
 }`;
 
-  return withDualGeminiFallback(
-    async () => {
-      return await extractTopicSectionFlow(input);
-    },
-    {
-      systemInstruction,
-      userPrompt,
-      parseResponse: (rawResponse: string) => {
-        const cleaned = rawResponse
-          .replace(/```json\n?/g, '')
-          .replace(/```\n?/g, '')
-          .trim();
-        return JSON.parse(cleaned) as ExtractTopicSectionOutput;
-      },
-    },
-  );
-}
-
-const prompt = ai.definePrompt({
-  name: 'extractTopicSectionPrompt',
-  input: { schema: ExtractTopicSectionInputSchema },
-  output: { schema: ExtractTopicSectionOutputSchema },
-  prompt: `You are a precise document extraction assistant.
-
-Read the document and identify the section that best matches the user's requested focus.
-
-Focus request: {{topicFocus}}
-
-Rules:
-- Match chapter numbers, unit names, topic names, and keywords.
-- Return the matching section text verbatim from the document.
-- Do not summarize or paraphrase.
-- If no clear matching section exists, return the full original document unchanged.
-
-Document Content:
-\`\`\`
-{{{documentContent}}}
-\`\`\`
-
-Return JSON with a single key: extractedText.
-`,
-});
-
-const extractTopicSectionFlow = async (input: ExtractTopicSectionInput): Promise<ExtractTopicSectionOutput> => {
-  const { output } = await prompt(input, {
-    model: 'googleai/gemini-2.5-flash',
+export async function extractTopicSection(input: ExtractTopicSectionInput): Promise<ExtractTopicSectionOutput> {
+  await enforceRateLimit(RateLimitPresets.extract);
+  return callNimJson(SYSTEM, USER_PROMPT(input), (raw) => {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (error) {
+      throw new Error(
+        `Failed to parse extract-topic response: ${
+          error instanceof Error ? error.message : 'unknown error'
+        }. Response preview: ${raw.slice(0, 200)}`,
+      );
+    }
+    if (
+      parsed === null ||
+      typeof parsed !== 'object' ||
+      typeof (parsed as { extractedText?: unknown }).extractedText !== 'string'
+    ) {
+      throw new Error(
+        `Missing or invalid "extractedText" field. Response preview: ${raw.slice(0, 200)}`,
+      );
+    }
+    return parsed as ExtractTopicSectionOutput;
   });
-
-  return output!;
-};
+}

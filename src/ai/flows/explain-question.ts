@@ -1,17 +1,20 @@
 "use server";
 /**
- * @fileOverview A flow to explain why an answer to a question is correct.
+ * @fileOverview Explain why an answer to a question is correct.
  */
 
-import { ai, withDualGeminiFallback } from "@/ai/genkit";
-import { z } from "genkit";
+import { callNimJson } from "@/ai/api";
+import { RateLimitPresets, enforceRateLimit } from "@/lib/rate-limit";
+import { z } from "zod";
 
 const ExplainQuestionInputSchema = z.object({
   documentContent: z
     .string()
     .describe("The text content of the study document."),
   question: z.string().describe("The question that was asked."),
-  correctAnswer: z.string().describe("The correct answer to the question."),
+  correctAnswer: z
+    .string()
+    .describe("The correct answer to the question."),
 });
 export type ExplainQuestionInput = z.infer<typeof ExplainQuestionInputSchema>;
 
@@ -24,13 +27,11 @@ const ExplainQuestionOutputSchema = z.object({
 });
 export type ExplainQuestionOutput = z.infer<typeof ExplainQuestionOutputSchema>;
 
-export async function explainQuestion(
-  input: ExplainQuestionInput,
-): Promise<ExplainQuestionOutput> {
-  const systemInstruction =
-    "You are a study assistant that helps students understand why answers to questions are correct.";
+const SYSTEM =
+  "You are a study assistant that helps students understand why answers to questions are correct.";
 
-  const userPrompt = `Given the document content, the question, and the correct answer, provide a detailed explanation of:
+const USER_PROMPT = (input: ExplainQuestionInput) =>
+  `Given the document content, the question, and the correct answer, provide a detailed explanation of:
 1. What the question is asking
 2. Why the provided answer is correct
 3. Supporting information from the document
@@ -43,57 +44,35 @@ Document Content:
 ${input.documentContent}
 \`\`\`
 
-Provide a clear, educational explanation. Return ONLY valid JSON in this format:
+Provide a clear, educational explanation. Return ONLY valid JSON in this exact format with no markdown:
 {
   "explanation": "your detailed explanation here"
 }`;
 
-  return withDualGeminiFallback(
-    async () => {
-      return await explainQuestionFlow(input);
-    },
-    {
-      systemInstruction,
-      userPrompt,
-      parseResponse: (rawResponse: string) => {
-        const cleaned = rawResponse
-          .replace(/```json\n?/g, "")
-          .replace(/```\n?/g, "")
-          .trim();
-        return JSON.parse(cleaned) as ExplainQuestionOutput;
-      },
-    },
-  );
-}
-
-const prompt = ai.definePrompt({
-  name: "explainQuestionPrompt",
-  input: { schema: ExplainQuestionInputSchema },
-  output: { schema: ExplainQuestionOutputSchema },
-  prompt: `You are a study assistant that helps students understand why answers to questions are correct.
-
-Given the document content, the question, and the correct answer, provide a detailed explanation of:
-1. What the question is asking
-2. Why the provided answer is correct
-3. Supporting information from the document
-
-Question: {{question}}
-Correct Answer: {{correctAnswer}}
-
-Document Content:
-\`\`\`
-{{{documentContent}}}
-\`\`\`
-
-Provide a clear, educational explanation.
-`,
-});
-
-const explainQuestionFlow = async (
+export async function explainQuestion(
   input: ExplainQuestionInput,
-): Promise<ExplainQuestionOutput> => {
-  const { output } = await prompt(input, {
-    model: "googleai/gemini-2.5-flash",
+): Promise<ExplainQuestionOutput> {
+  await enforceRateLimit(RateLimitPresets.explain);
+  return callNimJson(SYSTEM, USER_PROMPT(input), (raw) => {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (error) {
+      throw new Error(
+        `Failed to parse explanation response: ${
+          error instanceof Error ? error.message : "unknown error"
+        }. Response preview: ${raw.slice(0, 200)}`,
+      );
+    }
+    if (
+      parsed === null ||
+      typeof parsed !== "object" ||
+      typeof (parsed as { explanation?: unknown }).explanation !== "string"
+    ) {
+      throw new Error(
+        `Missing or invalid "explanation" field. Response preview: ${raw.slice(0, 200)}`,
+      );
+    }
+    return parsed as ExplainQuestionOutput;
   });
-  return output!;
-};
+}

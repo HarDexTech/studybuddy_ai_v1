@@ -10,6 +10,11 @@
 !.yarn/releases
 !.yarn/versions
 
+# Enforce a single lockfile (package-lock.json).
+/pnpm-lock.yaml
+/yarn.lock
+/pnpm-lock.yaml.metadata.json
+
 # testing
 /coverage
 
@@ -44,3 +49,5 @@ next-env.d.ts
 # firebase
 firebase-debug.log
 firestore-debug.log
+
+change.md
