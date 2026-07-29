@@ -60,6 +60,7 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { clearTestProgress, saveTestProgress } from "@/lib/storage";
 import { pickRandomDocumentChunk } from "@/lib/utils";
+import { retrieveTestContext } from "@/ai/rag";
 
 type TestViewProps = {
   initialQuestions: Question[];
@@ -288,6 +289,7 @@ export function TestView({
 
   const backgroundGenerationStarted = useRef(false);
   const generationErrorToastId = useRef<string | null>(null);
+  const ragContext = useRef<string>("");
   const [isAskAiDialogOpen, setIsAskAiDialogOpen] = useState(false);
   const [validationSubmitError, setValidationSubmitError] = useState<
     string | null
@@ -489,6 +491,16 @@ export function TestView({
       }
       backgroundGenerationStarted.current = true;
 
+      // Retrieve relevant document chunks via RAG before generation loop
+      try {
+        ragContext.current = await retrieveTestContext(
+          `Generate ${settings.difficulty} ${settings.questionType.join(", ")} questions about ${settings.topicFocus || "the document's main topics"}`,
+          { limit: 8 },
+        );
+      } catch (err) {
+        console.warn("RAG retrieval failed, falling back to random chunk:", err);
+      }
+
       let currentGeneratedQuestions = [...questions];
       let retryCount = 0;
 
@@ -516,7 +528,7 @@ export function TestView({
           );
 
           const generationPromise = generateBatchTestQuestions({
-            documentContent: pickRandomDocumentChunk(effectiveDocumentText),
+            documentContent: ragContext.current || pickRandomDocumentChunk(effectiveDocumentText),
             questionTypes: settings.questionType,
             difficulty: settings.difficulty,
             questionSource: settings.questionSource,

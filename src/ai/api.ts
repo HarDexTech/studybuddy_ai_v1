@@ -1,24 +1,20 @@
 import { isRateLimitError } from "./genkit";
 
 // ---------------------------------------------------------------------------
-// NVIDIA NIM client — OpenAI-compatible API via fetch
-// docs: https://docs.nvidia.com/nim/large-language-models/latest/getting-started.html
-// get a key: https://build.nvidia.com/deepseek-ai/deepseek-v4-flash
+// DeepSeek client — OpenAI-compatible API via fetch
+// Get a key at https://platform.deepseek.com/api_keys
 // ---------------------------------------------------------------------------
 
-const NVIDIA_NIM_API_KEY = process.env.NVIDIA_NIM_API_KEY?.trim() || "";
-const NIM_BASE_URL = "https://integrate.api.nvidia.com/v1";
+const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY?.trim() || "";
+const DEEPSEEK_BASE_URL = "https://api.deepseek.com/v1";
 
-const MODEL_PRIORITY = [
-  "deepseek-ai/deepseek-v4-flash",
-  "deepseek-ai/deepseek-v4-pro",
-];
+const MODEL_PRIORITY = ["deepseek-chat", "deepseek-reasoner"];
 
-const hasKey = NVIDIA_NIM_API_KEY.length > 0;
+const hasKey = DEEPSEEK_API_KEY.length > 0;
 
 if (!hasKey) {
   console.warn(
-    "[nim] No NVIDIA_NIM_API_KEY set. Add NVIDIA_NIM_API_KEY to .env.",
+    "[deepseek] No DEEPSEEK_API_KEY set. Add DEEPSEEK_API_KEY to .env.",
   );
 }
 
@@ -28,12 +24,12 @@ export const hasClients = hasKey;
 // Shared fetch helper
 // ---------------------------------------------------------------------------
 
-interface NimMessage {
+interface DeepSeekMessage {
   role: "system" | "user" | "assistant";
   content: string;
 }
 
-async function nimChat(
+async function deepseekChat(
   model: string,
   systemInstruction: string,
   userPrompt: string,
@@ -42,10 +38,10 @@ async function nimChat(
   const temperature = options.temperature ?? 0.7;
   const maxOutputTokens = options.maxOutputTokens ?? 4096;
 
-  const res = await fetch(`${NIM_BASE_URL}/chat/completions`, {
+  const res = await fetch(`${DEEPSEEK_BASE_URL}/chat/completions`, {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${NVIDIA_NIM_API_KEY}`,
+      Authorization: `Bearer ${DEEPSEEK_API_KEY}`,
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
@@ -63,7 +59,7 @@ async function nimChat(
   if (!res.ok) {
     const body = await res.text().catch(() => "");
     const err = new Error(
-      `NIM API error: ${res.status} ${res.statusText}. ${body.slice(0, 300)}`,
+      `DeepSeek API error: ${res.status} ${res.statusText}. ${body.slice(0, 300)}`,
     );
     (err as any).status = res.status;
     throw err;
@@ -72,12 +68,12 @@ async function nimChat(
   const json = await res.json();
   const text = json.choices?.[0]?.message?.content;
   if (!text?.trim()) {
-    throw new Error("AI_TEMP_UNAVAILABLE: NIM returned empty response.");
+    throw new Error("AI_TEMP_UNAVAILABLE: DeepSeek returned empty response.");
   }
   return text.trim();
 }
 
-async function nimChatStream(
+async function deepseekChatStream(
   model: string,
   systemInstruction: string,
   userPrompt: string,
@@ -90,10 +86,10 @@ async function nimChatStream(
   const temperature = options.temperature ?? 0.7;
   const maxOutputTokens = options.maxOutputTokens ?? 4096;
 
-  const res = await fetch(`${NIM_BASE_URL}/chat/completions`, {
+  const res = await fetch(`${DEEPSEEK_BASE_URL}/chat/completions`, {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${NVIDIA_NIM_API_KEY}`,
+      Authorization: `Bearer ${DEEPSEEK_API_KEY}`,
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
@@ -111,7 +107,7 @@ async function nimChatStream(
   if (!res.ok) {
     const body = await res.text().catch(() => "");
     const err = new Error(
-      `NIM API error: ${res.status} ${res.statusText}. ${body.slice(0, 300)}`,
+      `DeepSeek API error: ${res.status} ${res.statusText}. ${body.slice(0, 300)}`,
     );
     (err as any).status = res.status;
     throw err;
@@ -155,7 +151,7 @@ async function nimChatStream(
   }
 
   if (!full.trim()) {
-    throw new Error("AI_TEMP_UNAVAILABLE: NIM returned empty response.");
+    throw new Error("AI_TEMP_UNAVAILABLE: DeepSeek returned empty response.");
   }
 
   return full.trim();
@@ -178,8 +174,8 @@ export async function callNimJson<T>(
 ): Promise<T> {
   if (!hasKey) {
     throw new Error(
-      "AI_TEMP_UNAVAILABLE: No NIM API key configured. " +
-        "Set NVIDIA_NIM_API_KEY in .env.",
+      "AI_TEMP_UNAVAILABLE: No DeepSeek API key configured. " +
+        "Set DEEPSEEK_API_KEY in .env.",
     );
   }
 
@@ -187,13 +183,13 @@ export async function callNimJson<T>(
 
   for (const modelName of MODEL_PRIORITY) {
     try {
-      const text = await nimChat(modelName, systemInstruction, userPrompt, options);
+      const text = await deepseekChat(modelName, systemInstruction, userPrompt, options);
       const cleaned = stripCodeFences(text).trim();
       return parse(cleaned);
     } catch (error) {
       lastError = error;
       console.warn(
-        `[nim] model=${modelName} failed: ${error instanceof Error ? error.message.slice(0, 200) : error}`,
+        `[deepseek] model=${modelName} failed: ${error instanceof Error ? error.message.slice(0, 200) : error}`,
       );
       if (isRateLimitError(error)) {
         throw error;
@@ -205,7 +201,7 @@ export async function callNimJson<T>(
     lastError instanceof Error ? lastError.message : String(lastError ?? "unknown");
 
   throw new Error(
-    `AI_TEMP_UNAVAILABLE: all NIM attempts failed. last="${lastMsg}". ` +
+    `AI_TEMP_UNAVAILABLE: all DeepSeek attempts failed. last="${lastMsg}". ` +
       `models=[${MODEL_PRIORITY.join(",")}]`,
   );
 }
@@ -227,8 +223,8 @@ export async function callNimJsonStream(
 ): Promise<string> {
   if (!hasKey) {
     throw new Error(
-      "AI_TEMP_UNAVAILABLE: No NIM API key configured. " +
-        "Set NVIDIA_NIM_API_KEY in .env.",
+      "AI_TEMP_UNAVAILABLE: No DeepSeek API key configured. " +
+        "Set DEEPSEEK_API_KEY in .env.",
     );
   }
 
@@ -236,7 +232,7 @@ export async function callNimJsonStream(
 
   for (const modelName of MODEL_PRIORITY) {
     try {
-      return await nimChatStream(modelName, systemInstruction, userPrompt, {
+      return await deepseekChatStream(modelName, systemInstruction, userPrompt, {
         temperature: options.temperature,
         maxOutputTokens: options.maxOutputTokens,
         onChunk: options.onChunk,
@@ -244,7 +240,7 @@ export async function callNimJsonStream(
     } catch (error) {
       lastError = error;
       console.warn(
-        `[nim] model=${modelName} stream failed: ${error instanceof Error ? error.message.slice(0, 200) : error}`,
+        `[deepseek] model=${modelName} stream failed: ${error instanceof Error ? error.message.slice(0, 200) : error}`,
       );
       if (isRateLimitError(error)) {
         throw error;
@@ -256,9 +252,47 @@ export async function callNimJsonStream(
     lastError instanceof Error ? lastError.message : String(lastError ?? "unknown");
 
   throw new Error(
-    `AI_TEMP_UNAVAILABLE: all NIM streaming attempts failed. last="${lastMsg}". ` +
+    `AI_TEMP_UNAVAILABLE: all DeepSeek streaming attempts failed. last="${lastMsg}". ` +
       `models=[${MODEL_PRIORITY.join(",")}]`,
   );
+}
+
+// ---------------------------------------------------------------------------
+// Embedding (DeepSeek supports embeddings)
+// ---------------------------------------------------------------------------
+
+const EMBEDDING_MODEL = "deepseek-embedding";
+
+export async function embedText(text: string): Promise<number[]> {
+  if (!hasKey) {
+    throw new Error("No DeepSeek API key configured.");
+  }
+
+  const res = await fetch(`${DEEPSEEK_BASE_URL}/embeddings`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${DEEPSEEK_API_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: EMBEDDING_MODEL,
+      input: text,
+    }),
+  });
+
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(
+      `DeepSeek embedding error: ${res.status} ${res.statusText}. ${body.slice(0, 300)}`,
+    );
+  }
+
+  const json = await res.json();
+  const embedding = json.data?.[0]?.embedding;
+  if (!Array.isArray(embedding)) {
+    throw new Error("DeepSeek embedding response missing embedding data.");
+  }
+  return embedding as number[];
 }
 
 // ---------------------------------------------------------------------------

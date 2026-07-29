@@ -9,6 +9,7 @@
 import { getUserId, requireUserId } from "./auth";
 import { sql } from "./db";
 import type { CachedDocument, StoredTestProgress, PastQuestionSet } from "./types";
+import { indexDocument } from "@/ai/rag";
 
 const MAX_RECENT_DOCS = 10;
 const MAX_STORED_DOC_TEXT_CHARS = 200_000;
@@ -71,6 +72,9 @@ export async function addRecentDocument(doc: CachedDocument): Promise<void> {
         created_at = floor(extract(epoch from now()))::bigint
     `;
 
+    await indexDocument(doc.id, userId, trimmedText).catch((err) =>
+      console.error("Failed to index document for RAG:", err),
+    );
   } catch (error) {
     console.error("Failed to add recent document:", error);
   }

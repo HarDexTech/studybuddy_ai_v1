@@ -48,6 +48,8 @@ if (process.env.NODE_ENV !== "production") {
  * This DB only stores app-owned data, keyed by the Clerk user id.
  */
 export const SCHEMA_DDL = /* sql */ `
+  CREATE EXTENSION IF NOT EXISTS vector;
+
   CREATE TABLE IF NOT EXISTS documents (
     id TEXT PRIMARY KEY NOT NULL,
     user_id TEXT,
@@ -61,6 +63,19 @@ export const SCHEMA_DDL = /* sql */ `
 
   CREATE INDEX IF NOT EXISTS idx_documents_user ON documents (user_id);
   CREATE INDEX IF NOT EXISTS idx_documents_created ON documents (created_at DESC);
+
+  CREATE TABLE IF NOT EXISTS document_chunks (
+    id BIGSERIAL PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    doc_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    chunk_index INT NOT NULL,
+    content TEXT NOT NULL,
+    embedding vector(1024),
+    created_at BIGINT NOT NULL DEFAULT floor(extract(epoch from now()))::bigint
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_chunks_doc ON document_chunks (doc_id);
+  CREATE INDEX IF NOT EXISTS idx_chunks_user ON document_chunks (user_id);
 
   CREATE TABLE IF NOT EXISTS test_progress (
     id BIGSERIAL PRIMARY KEY,
