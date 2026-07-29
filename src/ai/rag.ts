@@ -1,7 +1,6 @@
 'use server';
 
 import { sql } from '@/lib/db';
-import { embedText } from './api';
 
 const CHUNK_SIZE = 1500;
 const CHUNK_OVERLAP = 200;
@@ -39,13 +38,9 @@ export async function indexDocument(docId: string, userId: string, text: string)
   const chunks = chunkText(text);
 
   for (let i = 0; i < chunks.length; i++) {
-    const content = chunks[i];
-    const embedding = await embedText(content);
-    const embeddingStr = `[${embedding.join(',')}]`;
-
     await sql`
-      INSERT INTO document_chunks (user_id, doc_id, chunk_index, content, embedding)
-      VALUES (${userId}, ${docId}, ${i}, ${content}, ${embeddingStr}::vector)
+      INSERT INTO document_chunks (user_id, doc_id, chunk_index, content)
+      VALUES (${userId}, ${docId}, ${i}, ${chunks[i]})
       ON CONFLICT DO NOTHING
     `;
   }
@@ -69,8 +64,6 @@ export async function searchChunks(
   options: { docId?: string; limit?: number } = {},
 ): Promise<ChunkResult[]> {
   const limit = options.limit ?? 5;
-  const embedding = await embedText(query);
-  const embeddingStr = `[${embedding.join(',')}]`;
 
   let rows: { content: string; chunk_index: number; doc_id: string }[];
 
@@ -78,8 +71,10 @@ export async function searchChunks(
     rows = await sql`
       SELECT content, chunk_index, doc_id
       FROM document_chunks
-      WHERE user_id = ${userId} AND doc_id = ${options.docId}
-      ORDER BY embedding <=> ${embeddingStr}::vector
+      WHERE user_id = ${userId}
+        AND doc_id = ${options.docId}
+        AND tsv_content @@ plainto_tsquery('english', ${query})
+      ORDER BY ts_rank(tsv_content, plainto_tsquery('english', ${query})) DESC
       LIMIT ${limit}
     ` as any;
   } else {
@@ -87,9 +82,31 @@ export async function searchChunks(
       SELECT content, chunk_index, doc_id
       FROM document_chunks
       WHERE user_id = ${userId}
-      ORDER BY embedding <=> ${embeddingStr}::vector
+        AND tsv_content @@ plainto_tsquery('english', ${query})
+      ORDER BY ts_rank(tsv_content, plainto_tsquery('english', ${query})) DESC
       LIMIT ${limit}
     ` as any;
+  }
+
+  // If full-text search returns nothing, fall back to random chunks
+  if (!rows || rows.length === 0) {
+    if (options.docId) {
+      rows = await sql`
+        SELECT content, chunk_index, doc_id
+        FROM document_chunks
+        WHERE user_id = ${userId} AND doc_id = ${options.docId}
+        ORDER BY RANDOM()
+        LIMIT ${limit}
+      ` as any;
+    } else {
+      rows = await sql`
+        SELECT content, chunk_index, doc_id
+        FROM document_chunks
+        WHERE user_id = ${userId}
+        ORDER BY RANDOM()
+        LIMIT ${limit}
+      ` as any;
+    }
   }
 
   return (rows || []).map((r) => ({

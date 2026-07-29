@@ -28,6 +28,18 @@ async function main(): Promise<void> {
   console.log("→ Connecting to Neon and applying schema…");
   const sql = neon(connectionString);
 
+  // Migrate document_chunks from vector(1024) to tsvector (DeepSeek retired
+  // its embedding model). Safe — chunks are regenerated on upload.
+  const hasOldSchema = await sql.query(
+    `SELECT column_name FROM information_schema.columns
+     WHERE table_name = 'document_chunks' AND column_name = 'embedding'`,
+    [],
+  );
+  if (hasOldSchema.length > 0) {
+    console.log("→ Migrating document_chunks schema (vector → tsvector)…");
+    await sql.query(`DROP TABLE IF EXISTS document_chunks CASCADE;`, []);
+  }
+
   // SCHEMA_DDL contains multiple statements. The neon() tagged template
   // treats interpolated values as bind parameters, but DDL (CREATE TABLE, etc.)
   // cannot be parameterized. Instead we use neon()'s `.query()` method, which
@@ -42,7 +54,7 @@ async function main(): Promise<void> {
   }
 
   console.log(
-    "✓ Schema applied. Tables: documents, document_chunks (pgvector), test_progress, rate_limit_buckets, past_question_sets.",
+    "✓ Schema applied. Tables: documents, document_chunks (full-text search), test_progress, rate_limit_buckets, past_question_sets.",
   );
 }
 

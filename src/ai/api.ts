@@ -8,7 +8,7 @@ import { isRateLimitError } from "./genkit";
 const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY?.trim() || "";
 const DEEPSEEK_BASE_URL = "https://api.deepseek.com/v1";
 
-const MODEL_PRIORITY = ["deepseek-chat", "deepseek-reasoner"];
+const MODEL_PRIORITY = ["deepseek-v4-flash"];
 
 const hasKey = DEEPSEEK_API_KEY.length > 0;
 
@@ -44,14 +44,10 @@ async function deepseekChat(
       { role: "system", content: systemInstruction },
       { role: "user", content: userPrompt },
     ],
+    temperature,
     max_tokens: maxOutputTokens,
     stream: false,
   };
-
-  // deepseek-reasoner does not support temperature
-  if (model !== "deepseek-reasoner") {
-    body.temperature = temperature;
-  }
 
   const res = await fetch(`${DEEPSEEK_BASE_URL}/chat/completions`, {
     method: "POST",
@@ -98,14 +94,10 @@ async function deepseekChatStream(
       { role: "system", content: systemInstruction },
       { role: "user", content: userPrompt },
     ],
+    temperature,
     max_tokens: maxOutputTokens,
     stream: true,
   };
-
-  // deepseek-reasoner does not support temperature
-  if (model !== "deepseek-reasoner") {
-    body.temperature = temperature;
-  }
 
   const res = await fetch(`${DEEPSEEK_BASE_URL}/chat/completions`, {
     method: "POST",
@@ -267,44 +259,6 @@ export async function callNimJsonStream(
     `AI_TEMP_UNAVAILABLE: all DeepSeek streaming attempts failed. last="${lastMsg}". ` +
       `models=[${MODEL_PRIORITY.join(",")}]`,
   );
-}
-
-// ---------------------------------------------------------------------------
-// Embedding (DeepSeek supports embeddings)
-// ---------------------------------------------------------------------------
-
-const EMBEDDING_MODEL = "deepseek-embedding";
-
-export async function embedText(text: string): Promise<number[]> {
-  if (!hasKey) {
-    throw new Error("No DeepSeek API key configured.");
-  }
-
-  const res = await fetch(`${DEEPSEEK_BASE_URL}/embeddings`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${DEEPSEEK_API_KEY}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: EMBEDDING_MODEL,
-      input: text,
-    }),
-  });
-
-  if (!res.ok) {
-    const body = await res.text().catch(() => "");
-    throw new Error(
-      `DeepSeek embedding error: ${res.status} ${res.statusText}. ${body.slice(0, 300)}`,
-    );
-  }
-
-  const json = await res.json();
-  const embedding = json.data?.[0]?.embedding;
-  if (!Array.isArray(embedding)) {
-    throw new Error("DeepSeek embedding response missing embedding data.");
-  }
-  return embedding as number[];
 }
 
 // ---------------------------------------------------------------------------
