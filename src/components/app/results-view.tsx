@@ -83,7 +83,7 @@ export function ResultsView({
   totalQuestionsGenerated,
 }: ResultsViewProps) {
   const correctAnswers = results.filter((r) => r.isCorrect).length;
-  const totalQuestions = results.length;
+  const totalQuestions = requestedQuestionCount ?? results.length;
   const scorePercentage =
     totalQuestions > 0 ? (correctAnswers / totalQuestions) * 100 : 0;
 
