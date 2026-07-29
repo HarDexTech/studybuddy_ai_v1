@@ -7,7 +7,7 @@ const topicAnalysisCache = new Map<string, { topics: string[]; seedQuestions: st
 import * as pdfjs from "pdfjs-dist";
 import mammoth from "mammoth";
 import JSZip from "jszip";
-import { generateSingleTestQuestion } from "@/ai/flows/generate-single-test-question";
+import { generateBatchTestQuestions } from "@/ai/flows/generate-batch-test-questions";
 import { generateCrossDocumentQuestions } from "@/ai/flows/generate-cross-document-questions";
 import { extractTopicSection } from "@/ai/flows/extract-topic-section";
 import { analyzePastQuestionTopics } from "@/ai/flows/analyze-past-question-topics";
@@ -845,58 +845,28 @@ export function UploadView({
           extracted.extractedText?.trim() || existingDocument.text;
       }
 
-      let firstQuestion: Question | null = null;
-      let attempt = 0;
+      // Generate initial batch (up to 5 questions)
+      const initialBatchSize = Math.min(5, settings.numberOfQuestions);
+      setLoadingMessage(
+        `Generating ${initialBatchSize} question${initialBatchSize > 1 ? "s" : ""}...`,
+      );
 
-      while (attempt <= INITIAL_GENERATION_MAX_RETRIES && !firstQuestion) {
-        try {
-          const timeoutPromise = new Promise<never>((_, reject) =>
-            setTimeout(
-              () => reject(new Error("Generation timeout")),
-              INITIAL_GENERATION_TIMEOUT,
-            ),
-          );
+      const batchResult = await generateBatchTestQuestions({
+        documentContent: pickRandomDocumentChunk(effectiveDocumentText),
+        questionTypes: settings.questionType,
+        difficulty: settings.difficulty,
+        questionSource: settings.questionSource,
+        existingQuestions: [],
+        batchSize: initialBatchSize,
+        priorityTopics: prioritizedTopics,
+        seedQuestions: seedQ,
+      });
 
-          const generationPromise = generateSingleTestQuestion({
-            documentContent: pickRandomDocumentChunk(effectiveDocumentText),
-            questionTypes: settings.questionType,
-            difficulty: settings.difficulty,
-            questionSource: settings.questionSource,
-            existingQuestions: [],
-          });
-
-          firstQuestion = (await Promise.race([
-            generationPromise,
-            timeoutPromise,
-          ])) as Question;
-        } catch (error) {
-          const errorMessage = ((error as Error)?.message || "").toLowerCase();
-          const isRetryable =
-            errorMessage.includes("timeout") ||
-            errorMessage.includes("fetch") ||
-            errorMessage.includes("network") ||
-            errorMessage.includes("503") ||
-            errorMessage.includes("overloaded");
-
-          if (!isRetryable || attempt >= INITIAL_GENERATION_MAX_RETRIES) {
-            throw error;
-          }
-
-          attempt++;
-          toast({
-            variant: "destructive",
-            title: "Generation Failed",
-            description: `Retrying... (${attempt}/${INITIAL_GENERATION_MAX_RETRIES})`,
-          });
-          await new Promise((resolve) => setTimeout(resolve, 2000));
-        }
+      if (!batchResult.questions || batchResult.questions.length === 0) {
+        throw new Error("Failed to generate initial questions.");
       }
 
-      if (!firstQuestion) {
-        throw new Error("Failed to generate first question.");
-      }
-
-      onTestGenerated([firstQuestion], {
+      onTestGenerated(batchResult.questions as Question[], {
         ...settings,
         priorityTopics: prioritizedTopics,
         seedQuestions: seedQ,
