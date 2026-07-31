@@ -20,6 +20,7 @@ import {
   Pencil,
   PlusCircle,
   RefreshCw,
+  ChevronLeft,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import jsPDF from "jspdf";
@@ -30,12 +31,14 @@ type SummaryViewProps = {
   documents: DocInfo[];
   onStartTest: () => void;
   onStartNew: () => void;
+  onBack: () => void;
 };
 
 export function SummaryView({
   documents,
   onStartTest,
   onStartNew,
+  onBack,
 }: SummaryViewProps) {
   const { toast } = useToast();
   const [summary, setSummary] = useState<string | null>(null);
@@ -45,7 +48,7 @@ export function SummaryView({
   const isMultiDoc = documents.length > 1;
   const primaryDoc = documents[0];
 
-  const handleGenerate = async () => {
+  const handleGenerate = async (force = false) => {
     if (isLoading) return;
 
     setIsLoading(true);
@@ -53,6 +56,7 @@ export function SummaryView({
     try {
       const result = await generateDocumentSummary({
         documents: documents.map((d) => ({ name: d.name, content: d.text })),
+        forceRegenerate: force,
       });
       setSummary(result);
     } catch (error) {
@@ -166,6 +170,10 @@ export function SummaryView({
 
   return (
     <div className="w-full max-w-5xl mx-auto flex-grow flex flex-col space-y-6 animate-in fade-in-50 duration-500">
+      <Button onClick={onBack} variant="ghost" size="sm" className="gap-1 self-start">
+        <ChevronLeft className="h-4 w-4" />
+        Back
+      </Button>
       <Card>
         <CardHeader>
           <div className="flex flex-col md:flex-row justify-between md:items-center gap-4">
@@ -210,7 +218,7 @@ export function SummaryView({
                     : "Create a comprehensive study guide with chapter breakdowns, key takeaways, glossary, and exam tips."}
                 </p>
               </div>
-              <Button onClick={handleGenerate} size="lg" disabled={isLoading}>
+              <Button onClick={() => handleGenerate()} size="lg" disabled={isLoading}>
                 {isLoading ? (
                   <>
                     <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -240,7 +248,7 @@ export function SummaryView({
               </div>
               <div className="flex justify-center gap-4 pt-2">
                 <Button
-                  onClick={handleGenerate}
+                  onClick={() => handleGenerate(true)}
                   variant="outline"
                   disabled={isLoading}
                 >
@@ -254,7 +262,7 @@ export function SummaryView({
               <p className="text-sm text-muted-foreground">
                 Something went wrong. Please try again.
               </p>
-              <Button onClick={handleGenerate} variant="outline">
+              <Button onClick={() => handleGenerate()} variant="outline">
                 <RefreshCw className="mr-2 h-4 w-4" />
                 Try Again
               </Button>

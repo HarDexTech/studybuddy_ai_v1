@@ -83,6 +83,7 @@ import {
   Trash2,
   UploadCloud,
   X,
+  ChevronLeft,
 } from "lucide-react";
 
 type UploadViewProps = {
@@ -99,6 +100,7 @@ type UploadViewProps = {
     text: string;
     file: { name: string; type: string; size: number };
   } | null;
+  onBack?: () => void;
 };
 
 const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
@@ -263,6 +265,7 @@ export function UploadView({
   onDocumentUploaded,
   onTestGenerated,
   existingDocument,
+  onBack,
 }: UploadViewProps) {
   const { toast } = useToast();
   const [file, setFile] = useState<File | null>(
@@ -961,7 +964,17 @@ export function UploadView({
 
   if (isTestCreationMode) {
     return (
-      <div className="w-full max-w-2xl mx-auto flex-grow flex items-center">
+      <div className="w-full max-w-2xl mx-auto flex-grow flex flex-col justify-center space-y-4">
+        <Button
+          onClick={onBack}
+          variant="ghost"
+          size="sm"
+          className="gap-1 self-start"
+          disabled={isLoading}
+        >
+          <ChevronLeft className="h-4 w-4" />
+          Back
+        </Button>
         <Card className="w-full animate-in fade-in-50 duration-500">
           <CardHeader>
             <CardTitle className="text-3xl font-bold text-center font-headline">

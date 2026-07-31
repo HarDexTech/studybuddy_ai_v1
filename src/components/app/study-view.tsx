@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { Loader2, Sparkles, MessageCircleQuestion, FileText, Pencil, PlusCircle } from 'lucide-react';
+import { Loader2, Sparkles, MessageCircleQuestion, FileText, Pencil, PlusCircle, ChevronLeft } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 
 type StudyViewProps = {
@@ -101,6 +101,10 @@ function DocumentPreview({ file, textContent }: { file: { name: string, type: st
 export function StudyView({ document, documentText, onStartTest, onStartNew, onSummarize }: StudyViewProps) {
     return (
         <div className="w-full max-w-5xl mx-auto flex-grow flex flex-col space-y-6 animate-in fade-in-50 duration-500">
+            <Button onClick={onStartNew} variant="ghost" size="sm" className="gap-1 self-start">
+                <ChevronLeft className="h-4 w-4" />
+                Back
+            </Button>
             <Card>
                 <CardHeader>
                     <div className="flex flex-col md:flex-row justify-between md:items-center gap-4">

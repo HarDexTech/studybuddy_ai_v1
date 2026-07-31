@@ -29,6 +29,10 @@ const GenerateDocumentSummaryInputSchema = z.object({
     .array(PriorityTopicSchema)
     .optional()
     .describe('Topics from past-question analysis to emphasize in the summary.'),
+  forceRegenerate: z
+    .boolean()
+    .optional()
+    .describe('Skip cache and force a fresh generation.'),
 });
 export type GenerateDocumentSummaryInput = z.infer<typeof GenerateDocumentSummaryInputSchema>;
 
@@ -183,7 +187,7 @@ export async function generateDocumentSummary(input: GenerateDocumentSummaryInpu
   await enforceRateLimit(RateLimitPresets.summary);
 
   const sig = docSignature(input.documents, input.priorityTopics);
-  const cached = await getCachedSummary(sig);
+  const cached = input.forceRegenerate ? null : await getCachedSummary(sig);
   if (cached) return cached;
 
   const truncated = truncateDocuments(input.documents);

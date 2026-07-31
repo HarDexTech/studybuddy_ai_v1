@@ -56,6 +56,7 @@ import {
   Sparkles,
   HelpCircle,
   FileText,
+  ChevronLeft,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { clearTestProgress, saveTestProgress } from "@/lib/storage";
@@ -69,6 +70,7 @@ type TestViewProps = {
   settings: TestSettings;
   onTestFinished: (results: TestResult[], totalGenerated: number) => void;
   showRestoreNotice?: boolean;
+  onBack: () => void;
   restoreSnapshot?: {
     questions: Question[];
     currentQuestionIndex: number;
@@ -237,6 +239,7 @@ export function TestView({
   onTestFinished,
   showRestoreNotice = false,
   restoreSnapshot = null,
+  onBack,
 }: TestViewProps) {
   const { toast, dismiss } = useToast();
   const [questions, setQuestions] = useState<Question[]>(() => {
@@ -1008,6 +1011,16 @@ export function TestView({
 
   return (
     <div className="w-full max-w-3xl mx-auto flex-grow flex flex-col justify-center space-y-4">
+      <Button
+        onClick={onBack}
+        variant="ghost"
+        size="sm"
+        className="gap-1 self-start"
+        disabled={isLoading || isGenerating}
+      >
+        <ChevronLeft className="h-4 w-4" />
+        Back
+      </Button>
       {currentQuestion && (
         <AskAiDialog
           open={isAskAiDialogOpen}

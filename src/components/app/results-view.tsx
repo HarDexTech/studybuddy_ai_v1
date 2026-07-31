@@ -18,13 +18,14 @@ import {
   AccordionTrigger,
 } from "@/components/ui/accordion";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { CheckCircle2, XCircle, Download, AlertTriangle } from "lucide-react";
+import { CheckCircle2, XCircle, Download, AlertTriangle, ChevronLeft } from "lucide-react";
 
 type ResultsViewProps = {
   results: TestResult[];
   onStartNew: () => void;
   requestedQuestionCount?: number;
   totalQuestionsGenerated?: number; // Add this to know how many were actually generated
+  onBack: () => void;
 };
 
 const PieChart = ({ score, size = 200 }: { score: number; size?: number }) => {
@@ -81,6 +82,7 @@ export function ResultsView({
   onStartNew,
   requestedQuestionCount,
   totalQuestionsGenerated,
+  onBack,
 }: ResultsViewProps) {
   const correctAnswers = results.filter((r) => r.isCorrect).length;
   const totalQuestions = requestedQuestionCount ?? results.length;
@@ -154,6 +156,10 @@ export function ResultsView({
 
   return (
     <div className="w-full max-w-3xl mx-auto flex-grow flex flex-col items-center justify-center animate-in fade-in-50 duration-500">
+      <Button onClick={onBack} variant="ghost" size="sm" className="gap-1 self-start">
+        <ChevronLeft className="h-4 w-4" />
+        Back
+      </Button>
       <Card className="w-full">
         <CardHeader className="text-center">
           <CardTitle className="text-4xl font-bold font-headline">

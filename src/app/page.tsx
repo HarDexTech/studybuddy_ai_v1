@@ -82,6 +82,9 @@ export default function Home() {
     useState<TestRestoreSnapshot | null>(null);
   const [showRestoredSessionNotice, setShowRestoredSessionNotice] =
     useState(false);
+  const [testOrigin, setTestOrigin] = useState<"studying" | "summarizing">(
+    "studying",
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -224,7 +227,8 @@ export default function Home() {
     setView("studying");
   };
 
-  const handleStartTestCreation = () => {
+  const handleStartTestCreation = (origin: "studying" | "summarizing") => {
+    setTestOrigin(origin);
     setView("upload"); // Reuse upload view for test settings
   };
 
@@ -275,6 +279,7 @@ export default function Home() {
             onDocumentUploaded={handleDocumentUploaded}
             onTestGenerated={handleTestGenerated}
             existingDocument={documentInfo}
+            onBack={() => setView(testOrigin)}
           />
         );
       case "studying":
@@ -283,7 +288,7 @@ export default function Home() {
             <StudyView
               document={documentInfo.file}
               documentText={documentInfo.text}
-              onStartTest={handleStartTestCreation}
+              onStartTest={() => handleStartTestCreation("studying")}
               onStartNew={handleStartNew}
               onSummarize={handleSummarize}
             />
@@ -298,8 +303,9 @@ export default function Home() {
                 type: documentInfo.file.type,
                 text: documentInfo.text,
               }]}
-              onStartTest={handleStartTestCreation}
+              onStartTest={() => handleStartTestCreation("summarizing")}
               onStartNew={handleStartNew}
+              onBack={() => setView("studying")}
             />
           )
         );
@@ -315,6 +321,7 @@ export default function Home() {
               onTestFinished={handleTestFinished}
               showRestoreNotice={showRestoredSessionNotice}
               restoreSnapshot={restoreSnapshot}
+              onBack={() => setView(testOrigin)}
             />
           )
         );
@@ -325,6 +332,7 @@ export default function Home() {
             onStartNew={handleStartNew}
             requestedQuestionCount={testSettings?.numberOfQuestions}
             totalQuestionsGenerated={totalGeneratedQuestions}
+            onBack={() => setView(testOrigin)}
           />
         );
       default:
