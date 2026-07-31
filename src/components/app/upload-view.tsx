@@ -568,31 +568,33 @@ export function UploadView({
       const pdfItem = clipboardItems.find(
         (item) => item.kind === "file" && item.type === "application/pdf",
       );
+      const imageItem = clipboardItems.find(
+        (item) => item.kind === "file" && item.type.startsWith("image/"),
+      );
 
-      if (!pdfItem) {
+      const pastedFile = pdfItem?.getAsFile() ?? imageItem?.getAsFile();
+      if (!pastedFile) {
         const hasOtherFile = clipboardItems.some(
           (item) => item.kind === "file",
         );
         if (hasOtherFile) {
           toast({
             variant: "destructive",
-            title: "Paste Supports PDF Only",
+            title: "Unsupported File",
             description:
-              "Please paste a PDF document or upload another file type.",
+              "Please paste a PDF document or image, or upload another file type.",
           });
         }
         return;
       }
 
-      const pastedFile = pdfItem.getAsFile();
-      if (!pastedFile) return;
-
       event.preventDefault();
 
+      const ext = pastedFile.type === "application/pdf" ? "pdf" : "png";
       const normalizedFile = new File(
         [pastedFile],
-        pastedFile.name || `pasted-scan-${Date.now()}.pdf`,
-        { type: "application/pdf" },
+        pastedFile.name || `pasted-${Date.now()}.${ext}`,
+        { type: pastedFile.type },
       );
 
       await handleFileChange(normalizedFile);
@@ -702,9 +704,21 @@ export function UploadView({
         selectedFile.type.startsWith("text/")
       ) {
         text = new TextDecoder().decode(arrayBufferResult);
+      } else if (
+        selectedFile.type.startsWith("image/")
+      ) {
+        setLoadingMessage("Running OCR on image...");
+        const { createWorker } = await import("tesseract.js");
+        const worker = await createWorker("eng");
+        try {
+          const { data: { text: ocrText } } = await worker.recognize(selectedFile);
+          text = ocrText || "";
+        } finally {
+          await worker.terminate();
+        }
       } else {
         handleError(
-          "Unsupported file type. Please use PDF, DOCX, PPTX, or a plain text file.",
+          "Unsupported file type. Please use PDF, DOCX, PPTX, TXT, or an image (PNG, JPG).",
         );
         return;
       }
@@ -1591,7 +1605,7 @@ export function UploadView({
               ref={fileInputRef}
               className="hidden"
               onChange={(e) => handleFileChange(e.target.files?.[0] || null)}
-              accept=".pdf,.docx,.pptx,.txt"
+              accept=".pdf,.docx,.pptx,.txt,.png,.jpg,.jpeg"
             />
             <div className="flex flex-col items-center gap-2 text-muted-foreground">
               <UploadCloud className="h-10 w-10 text-primary" />
@@ -1618,16 +1632,16 @@ export function UploadView({
                     Drag & drop your file here
                   </p>
                   <p>or click to browse</p>
-                  <p className="text-xs">or paste a PDF from clipboard</p>
+                  <p className="text-xs">or paste a PDF or image from clipboard</p>
                   <p className="text-xs mt-2">
-                    PDF, DOCX, PPTX, TXT supported (Max 50MB)
+                    PDF, DOCX, PPTX, TXT, images (PNG, JPG) supported (Max 50MB)
                   </p>
                 </>
               )}
             </div>
           </div>
           <p className="text-xs text-muted-foreground mt-2">
-            Scanned PDFs are supported with OCR and may take longer to process.
+            Scanned PDFs and images are supported with OCR and may take longer to process.
           </p>
 
           <div className="flex items-center space-x-2 mt-4">
