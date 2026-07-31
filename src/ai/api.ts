@@ -8,7 +8,7 @@ import { isRateLimitError } from "./genkit";
 const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY?.trim() || "";
 const DEEPSEEK_BASE_URL = "https://api.deepseek.com/v1";
 
-const MODEL_PRIORITY = ["deepseek-v4-flash"];
+export const MODEL_PRIORITY = ["deepseek-v4-flash"];
 
 const hasKey = DEEPSEEK_API_KEY.length > 0;
 
@@ -85,17 +85,29 @@ async function deepseekChat(
   return text.trim();
 }
 
-async function deepseekChatStream(
+// ---------------------------------------------------------------------------
+// Shared streaming SSE helper
+//
+// Used both by `deepseekChatStream` (accumulate + return) and by route handlers
+// that need to pipe deltas straight through to the client.
+// ---------------------------------------------------------------------------
+
+export interface DeepSeekStreamDelta {
+  content?: string;
+  reasoningContent?: string;
+  finishReason?: string;
+}
+
+export async function* deepseekChatStreamChunks(
   model: string,
   systemInstruction: string,
   userPrompt: string,
   options: {
     temperature?: number;
     maxOutputTokens?: number;
-    onChunk?: (text: string) => void;
     thinkingDisabled?: boolean;
   } = {},
-): Promise<string> {
+): AsyncGenerator<DeepSeekStreamDelta, void, void> {
   const temperature = options.temperature ?? 0.7;
   const maxOutputTokens = options.maxOutputTokens ?? 4096;
 
@@ -136,10 +148,7 @@ async function deepseekChatStream(
   if (!reader) throw new Error("No response body for streaming.");
 
   const decoder = new TextDecoder();
-  let full = "";
-  let reasoning = "";
   let buffer = "";
-  let lastFinishReason = "";
 
   try {
     while (true) {
@@ -154,18 +163,17 @@ async function deepseekChatStream(
         const trimmed = line.trim();
         if (!trimmed || !trimmed.startsWith("data: ")) continue;
         const payload = trimmed.slice(6);
-        if (payload === "[DONE]") break;
+        if (payload === "[DONE]") return;
         try {
           const chunk = JSON.parse(payload);
-          const delta = chunk.choices?.[0]?.delta?.content;
-          if (delta) {
-            full += delta;
-            options.onChunk?.(full);
-          }
+          const delta: DeepSeekStreamDelta = {};
+          const content = chunk.choices?.[0]?.delta?.content;
+          if (content) delta.content = content;
           const rdelta = chunk.choices?.[0]?.delta?.reasoning_content;
-          if (rdelta) reasoning += rdelta;
+          if (rdelta) delta.reasoningContent = rdelta;
           const fr = chunk.choices?.[0]?.finish_reason;
-          if (fr) lastFinishReason = fr;
+          if (fr) delta.finishReason = fr;
+          yield delta;
         } catch {
           // skip malformed SSE chunks
         }
@@ -173,6 +181,37 @@ async function deepseekChatStream(
     }
   } finally {
     reader.releaseLock();
+  }
+}
+
+async function deepseekChatStream(
+  model: string,
+  systemInstruction: string,
+  userPrompt: string,
+  options: {
+    temperature?: number;
+    maxOutputTokens?: number;
+    onChunk?: (text: string) => void;
+    thinkingDisabled?: boolean;
+  } = {},
+): Promise<string> {
+  const maxOutputTokens = options.maxOutputTokens ?? 4096;
+
+  let full = "";
+  let reasoning = "";
+  let lastFinishReason = "";
+
+  for await (const delta of deepseekChatStreamChunks(model, systemInstruction, userPrompt, {
+    temperature: options.temperature,
+    maxOutputTokens,
+    thinkingDisabled: options.thinkingDisabled,
+  })) {
+    if (delta.content) {
+      full += delta.content;
+      options.onChunk?.(full);
+    }
+    if (delta.reasoningContent) reasoning += delta.reasoningContent;
+    if (delta.finishReason) lastFinishReason = delta.finishReason;
   }
 
   if (!full.trim()) {

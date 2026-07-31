@@ -15,6 +15,7 @@ type StudyViewProps = {
     onStartTest: () => void;
     onStartNew: () => void;
     onSummarize?: () => void;
+    onBack?: () => void;
 };
 
 function QnaSection({ documentText }: { documentText: string }) {
@@ -98,10 +99,10 @@ function DocumentPreview({ file, textContent }: { file: { name: string, type: st
     );
 }
 
-export function StudyView({ document, documentText, onStartTest, onStartNew, onSummarize }: StudyViewProps) {
+export function StudyView({ document, documentText, onStartTest, onStartNew, onSummarize, onBack }: StudyViewProps) {
     return (
         <div className="w-full max-w-5xl mx-auto flex-grow flex flex-col space-y-6 animate-in fade-in-50 duration-500">
-            <Button onClick={onStartNew} variant="ghost" size="sm" className="gap-1 self-start">
+            <Button onClick={onBack ?? onStartNew} variant="ghost" size="sm" className="gap-1 self-start">
                 <ChevronLeft className="h-4 w-4" />
                 Back
             </Button>

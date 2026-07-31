@@ -291,6 +291,7 @@ export default function Home() {
               onStartTest={() => handleStartTestCreation("studying")}
               onStartNew={handleStartNew}
               onSummarize={handleSummarize}
+              onBack={() => setView("upload")}
             />
           )
         );

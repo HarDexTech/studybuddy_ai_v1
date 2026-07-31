@@ -1,7 +1,6 @@
 "use client";
 
 import { useState } from "react";
-import { generateDocumentSummary } from "@/ai/flows/generate-document-summary";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Button } from "@/components/ui/button";
@@ -53,12 +52,42 @@ export function SummaryView({
 
     setIsLoading(true);
     setHasGenerated(true);
+    setSummary("");
+
     try {
-      const result = await generateDocumentSummary({
-        documents: documents.map((d) => ({ name: d.name, content: d.text })),
-        forceRegenerate: force,
+      const res = await fetch("/api/generate-summary", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          documents: documents.map((d) => ({ name: d.name, content: d.text })),
+          forceRegenerate: force,
+        }),
       });
-      setSummary(result);
+
+      if (!res.ok) {
+        let message = `Summary request failed with status ${res.status}.`;
+        try {
+          const errBody = await res.json();
+          if (errBody?.error) message = errBody.error;
+        } catch {
+          // fall back to the generic message
+        }
+        throw new Error(message);
+      }
+
+      if (!res.body) {
+        throw new Error("Summary stream unavailable.");
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let accumulated = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        accumulated += decoder.decode(value, { stream: true });
+        setSummary(accumulated);
+      }
     } catch (error) {
       console.error("Summary generation error:", error);
       const errorMessage = (error as Error)?.message || "An unknown error occurred.";
@@ -73,6 +102,7 @@ export function SummaryView({
           ? "The AI model is temporarily overloaded. Please try again in a moment."
           : "There was a problem communicating with the AI.",
       });
+      setSummary("");
     } finally {
       setIsLoading(false);
     }
@@ -232,13 +262,6 @@ export function SummaryView({
                 )}
               </Button>
             </div>
-          ) : isLoading ? (
-            <div className="flex flex-col items-center justify-center py-12 text-center space-y-4">
-              <Loader2 className="h-10 w-10 animate-spin text-muted-foreground" />
-              <p className="text-sm text-muted-foreground">
-                Analyzing document{isMultiDoc ? "s" : ""} and generating study guide...
-              </p>
-            </div>
           ) : summary ? (
             <>
               <div className="max-h-[65vh] overflow-y-auto pr-4">
@@ -257,6 +280,13 @@ export function SummaryView({
                 </Button>
               </div>
             </>
+          ) : isLoading ? (
+            <div className="flex flex-col items-center justify-center py-12 text-center space-y-4">
+              <Loader2 className="h-10 w-10 animate-spin text-muted-foreground" />
+              <p className="text-sm text-muted-foreground">
+                Analyzing document{isMultiDoc ? "s" : ""} and generating study guide...
+              </p>
+            </div>
           ) : (
             <div className="flex flex-col items-center justify-center py-12 text-center space-y-4">
               <p className="text-sm text-muted-foreground">
