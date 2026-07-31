@@ -1,11 +1,14 @@
 'use server';
 /**
- * @fileOverview Generate chapter summaries, key takeaways, and glossary from one or more documents.
+ * @fileOverview Generate a comprehensive study guide from documents as raw markdown.
+ * No JSON wrapping — token-efficient, streaming-friendly.
  */
 
 import { callNimJsonStream } from '@/ai/api';
 import { RateLimitPresets, enforceRateLimit } from '@/lib/rate-limit';
+import { getCachedSummary, saveSummary } from '@/lib/storage';
 import { z } from 'zod';
+import crypto from 'crypto';
 
 const DocumentSchema = z.object({
   name: z.string().describe('The file name of the document.'),
@@ -29,32 +32,6 @@ const GenerateDocumentSummaryInputSchema = z.object({
 });
 export type GenerateDocumentSummaryInput = z.infer<typeof GenerateDocumentSummaryInputSchema>;
 
-const ChapterSummarySchema = z.object({
-  title: z.string().describe('The title of the chapter or section.'),
-  summary: z.string().describe('A concise summary of the chapter.'),
-  sourceDoc: z.string().optional().describe('Which document(s) this chapter originated from.'),
-});
-
-const GlossaryTermSchema = z.object({
-  term: z.string().describe('A key term from the document.'),
-  definition: z.string().describe('The definition of the term.'),
-  sourceDoc: z.string().optional().describe('Which document(s) this term originated from.'),
-});
-
-const ExamFocusTopicSchema = z.object({
-  topic: z.string().describe('The topic name frequently tested in past questions.'),
-  frequency: z.number().optional().describe('How many past questions mapped to this topic.'),
-  note: z.string().describe('A brief note about how this topic appears in the document.'),
-});
-
-const GenerateDocumentSummaryOutputSchema = z.object({
-  chapterSummaries: z.array(ChapterSummarySchema).describe('Summaries of each chapter or section.'),
-  keyTakeaways: z.array(z.string()).describe('The most important takeaways from the document(s).'),
-  glossary: z.array(GlossaryTermSchema).describe('Key terms and their definitions.'),
-  examFocusTopics: z.array(ExamFocusTopicSchema).optional().describe('Topics frequently tested in past questions.'),
-});
-export type GenerateDocumentSummaryOutput = z.infer<typeof GenerateDocumentSummaryOutputSchema>;
-
 const MAX_DOC_CHARS_PER_DOC = 50000;
 
 function truncateDocuments(docs: { name: string; content: string }[]): { name: string; content: string }[] {
@@ -64,90 +41,74 @@ function truncateDocuments(docs: { name: string; content: string }[]): { name: s
   });
 }
 
-const SYSTEM = 'You are an expert study assistant that creates comprehensive document summaries.';
+function docSignature(documents: { name: string; content: string }[], priorityTopics?: { topic: string; frequency?: number }[]): string {
+  const docsPart = documents.map((d) => `${d.name}:${d.content.slice(0, 2000)}`).join('||');
+  const topicsPart = priorityTopics
+    ? priorityTopics.map((t) => `${t.topic}:${t.frequency ?? 0}`).sort().join(',')
+    : '';
+  return crypto.createHash('sha256').update(docsPart + '|' + topicsPart).digest('hex');
+}
+
+const SYSTEM = 'You are an expert study guide creator and exam preparation specialist.';
 
 const USER_PROMPT = (documents: { name: string; content: string }[], priorityTopics?: { topic: string; frequency?: number }[]) => {
   const docsText = documents
     .map((d, i) => `DOCUMENT ${i + 1}: "${d.name}"\n\`\`\`\n${d.content}\n\`\`\``)
     .join('\n\n');
 
-  let basePrompt = `Analyze the provided document${documents.length > 1 ? 's' : ''} and produce:
+  const hasPriorities = priorityTopics && priorityTopics.length > 0;
 
-1. **Chapter Summaries** — Break the content into logical sections/chapters. For each section, provide a concise summary (2-4 sentences) capturing the core content. ${documents.length > 1 ? 'Include a "sourceDoc" field indicating which document the chapter came from.' : ''}
-2. **Key Takeaways** — Extract 5-10 of the most important insights, facts, or concepts from across the entire content. Each takeaway should be a single clear sentence.
-3. **Glossary** — Identify 5-15 key technical terms, acronyms, or important concepts with clear definitions. ${documents.length > 1 ? 'Include a "sourceDoc" field indicating which document the term came from.' : ''}
-4. **Exam Focus Topics** — Identify which topics from the provided list appear in the document and where.
+  let prompt = `Analyze the provided document${documents.length > 1 ? 's' : ''} and produce a comprehensive, exam-ready study guide in raw markdown.
 
-${documents.length > 1 ? 'Synthesize connections and contrasts between the documents where relevant.' : ''}
+## Structure
+Produce these sections using markdown headings (##, ###):
+
+1. **Course Overview** — Subject, key topics covered, brief description.
+2. **Chapter/Topic Breakdowns** — For each major topic:
+   - ## heading for the topic name
+   - Definition and explanation
+   - Key points as bullet lists
+   - Sub-topics with clear explanations
+   - Formulas/equations with variables defined
+   - Worked examples with step-by-step solutions (if applicable)
+   - Comparison tables for similar concepts (| Feature | A | B |)
+3. **Key Takeaways** — 10-20 of the most important insights as a bullet list. Each takeaway a complete sentence.
+4. **Glossary** — 10-20 key terms with definitions. Use **term** — definition format.
+${hasPriorities ? `5. **Frequently Tested Topics** — Dedicate extra space to these topics from past exams. Include multiple examples, likely exam questions, and memory aids. Mark these with a 🎯 emoji.` : ''}
+${documents.length > 1 ? `6. **Connections & Contrasts** — Identify where topics connect across documents, highlight contradictions or complementary information.` : ''}
+
+## Formatting
+- Use ## for sections, ### for sub-sections, #### for sub-sub-sections
+- Use tables for comparisons: | Feature | Detail |
+- Use **bold** for key terms, > for callouts
+- Use \`code\` for formulas
+- Use --- to separate major sections
+
+## Tone
+- Comprehensive but no fluff
+- Exam-oriented — emphasize what students need to know
+- Structured — easy to scan and review
+
+${hasPriorities ? `## Priority Topics (Expand in Detail)
+${priorityTopics.map((t) => `- ${t.topic}${t.frequency ? ` (appeared ${t.frequency}×)` : ''}`).join('\n')}
+
+Dedicate 2-3× more space to these. Include examples, exam questions, and memory aids for each.` : ''}
 
 Document${documents.length > 1 ? 's' : ''}:
-${docsText}`;
+${docsText}
 
-  if (priorityTopics && priorityTopics.length > 0) {
-    const topicsText = priorityTopics
-      .map((t) => `- ${t.topic}${t.frequency ? ` (appeared ${t.frequency} times in past questions)` : ''}`)
-      .join('\n');
-    basePrompt += `
+Return ONLY the raw markdown. No JSON, no code fences, no preamble. Start directly with the first ## heading.`;
 
-Priority Topics (frequently tested in past questions — expand summaries/takeaways for these):
-${topicsText}`;
-  }
-
-  basePrompt += `
-
-Return ONLY valid JSON with four keys: chapterSummaries (array of {title, summary${documents.length > 1 ? ', sourceDoc' : ''}}), keyTakeaways (array of strings), glossary (array of {term, definition${documents.length > 1 ? ', sourceDoc' : ''}}), and examFocusTopics (array of {topic, frequency, note}). No markdown.`;
-
-  return basePrompt;
+  return prompt;
 };
 
-function stripCodeFences(raw: string): string {
-  let cleaned = raw;
-  const fenceMatch = cleaned.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  if (fenceMatch && fenceMatch[1]) {
-    cleaned = fenceMatch[1];
-  }
-  cleaned = cleaned.replace(/```json\n?/gi, "").replace(/```\n?/gi, "");
-  const firstBrace = cleaned.search(/[{[]/);
-  if (firstBrace > 0) {
-    cleaned = cleaned.slice(firstBrace);
-  }
-  const lastBrace = Math.max(
-    cleaned.lastIndexOf("}"),
-    cleaned.lastIndexOf("]"),
-  );
-  if (lastBrace > 0 && lastBrace < cleaned.length - 1) {
-    cleaned = cleaned.slice(0, lastBrace + 1);
-  }
-  return cleaned;
-}
-
-function parseSummaryJson(raw: string): GenerateDocumentSummaryOutput {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch (error) {
-    throw new Error(
-      `Failed to parse summary response: ${
-        error instanceof Error ? error.message : 'unknown error'
-      }. Response preview: ${raw.slice(0, 200)}`,
-    );
-  }
-  if (
-    parsed === null ||
-    typeof parsed !== 'object' ||
-    !Array.isArray((parsed as { chapterSummaries?: unknown }).chapterSummaries) ||
-    !Array.isArray((parsed as { keyTakeaways?: unknown }).keyTakeaways) ||
-    !Array.isArray((parsed as { glossary?: unknown }).glossary)
-  ) {
-    throw new Error(
-      `Missing chapterSummaries/keyTakeaways/glossary arrays. Response preview: ${raw.slice(0, 200)}`,
-    );
-  }
-  return parsed as GenerateDocumentSummaryOutput;
-}
-
-export async function generateDocumentSummary(input: GenerateDocumentSummaryInput): Promise<GenerateDocumentSummaryOutput> {
+export async function generateDocumentSummary(input: GenerateDocumentSummaryInput): Promise<string> {
   await enforceRateLimit(RateLimitPresets.summary);
+
+  const sig = docSignature(input.documents, input.priorityTopics);
+  const cached = await getCachedSummary(sig);
+  if (cached) return cached;
+
   const truncated = truncateDocuments(input.documents);
 
   const SUMMARY_TIMEOUT_MS = 120_000;
@@ -161,6 +122,9 @@ export async function generateDocumentSummary(input: GenerateDocumentSummaryInpu
     ),
   ]);
 
-  const cleaned = stripCodeFences(raw).trim();
-  return parseSummaryJson(cleaned);
+  saveSummary(sig, raw).catch((err) =>
+    console.error("Failed to cache summary:", err),
+  );
+
+  return raw;
 }

@@ -101,4 +101,13 @@ export const SCHEMA_DDL = /* sql */ `
 
   CREATE INDEX IF NOT EXISTS idx_past_questions_user ON past_question_sets (user_id);
   CREATE INDEX IF NOT EXISTS idx_past_questions_uploaded ON past_question_sets (uploaded_at DESC);
+
+  CREATE TABLE IF NOT EXISTS summaries (
+    sig TEXT PRIMARY KEY NOT NULL,
+    user_id TEXT,
+    summary TEXT NOT NULL,
+    created_at BIGINT NOT NULL DEFAULT floor(extract(epoch from now()))::bigint
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_summaries_user ON summaries (user_id);
 `;

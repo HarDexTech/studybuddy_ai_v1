@@ -40,6 +40,18 @@ async function main(): Promise<void> {
     await sql.query(`DROP TABLE IF EXISTS document_chunks CASCADE;`, []);
   }
 
+  // Migrate summaries from JSONB to TEXT. Safe — cached summaries regenerate.
+  const summaryJsonb = await sql.query(
+    `SELECT data_type FROM information_schema.columns
+     WHERE table_name = 'summaries' AND column_name = 'summary' AND data_type = 'jsonb'`,
+    [],
+  );
+  if (summaryJsonb.length > 0) {
+    console.log("→ Migrating summaries (jsonb → text)…");
+    await sql.query(`TRUNCATE TABLE summaries;`, []);
+    await sql.query(`ALTER TABLE summaries ALTER COLUMN summary TYPE TEXT;`, []);
+  }
+
   // SCHEMA_DDL contains multiple statements. The neon() tagged template
   // treats interpolated values as bind parameters, but DDL (CREATE TABLE, etc.)
   // cannot be parameterized. Instead we use neon()'s `.query()` method, which
@@ -54,7 +66,7 @@ async function main(): Promise<void> {
   }
 
   console.log(
-    "✓ Schema applied. Tables: documents, document_chunks (full-text search), test_progress, rate_limit_buckets, past_question_sets.",
+    "✓ Schema applied. Tables: documents, document_chunks (full-text search), test_progress, rate_limit_buckets, past_question_sets, summaries.",
   );
 }
 

@@ -10,6 +10,7 @@ import { getUserId, requireUserId } from "./auth";
 import { sql } from "./db";
 import type { CachedDocument, StoredTestProgress, PastQuestionSet } from "./types";
 import { indexDocument } from "@/ai/rag";
+import { after } from "next/server";
 
 const MAX_RECENT_DOCS = 10;
 const MAX_STORED_DOC_TEXT_CHARS = 200_000;
@@ -75,6 +76,16 @@ export async function addRecentDocument(doc: CachedDocument): Promise<void> {
     await indexDocument(doc.id, userId, trimmedText).catch((err) =>
       console.error("Failed to index document for RAG:", err),
     );
+
+    // Pre-generate summary in background so it's cached before user clicks "Summarize"
+    after(async () => {
+      const { generateDocumentSummary } = await import("@/ai/flows/generate-document-summary");
+      await generateDocumentSummary({
+        documents: [{ name: doc.name, content: trimmedText }],
+      }).catch((err) =>
+        console.error("Background summary generation failed:", err),
+      );
+    });
   } catch (error) {
     console.error("Failed to add recent document:", error);
   }
@@ -227,5 +238,35 @@ export async function getMultiplePastQuestionSets(ids: string[]): Promise<PastQu
   } catch (error) {
     console.error("Failed to get multiple past question sets:", error);
     return [];
+  }
+}
+
+export async function getCachedSummary(sig: string): Promise<string | null> {
+  const userId = await getUserId();
+  if (!userId) return null;
+  try {
+    const rows = await sql`
+      SELECT summary FROM summaries WHERE sig = ${sig} AND user_id = ${userId}
+    `;
+    if (!rows || rows.length === 0) return null;
+    const raw = rows[0].summary;
+    return typeof raw === 'string' ? raw : null;
+  } catch (error) {
+    console.error("Failed to get cached summary:", error);
+    return null;
+  }
+}
+
+export async function saveSummary(sig: string, summary: string): Promise<void> {
+  const userId = await getUserId();
+  if (!userId) return;
+  try {
+    await sql`
+      INSERT INTO summaries (sig, user_id, summary)
+      VALUES (${sig}, ${userId}, ${summary})
+      ON CONFLICT(sig) DO NOTHING
+    `;
+  } catch (error) {
+    console.error("Failed to save summary:", error);
   }
 }

@@ -58,22 +58,6 @@ export interface CachedDocument {
   text: string;
 }
 
-export interface ChapterSummary {
-  title: string;
-  summary: string;
-}
-
-export interface GlossaryTerm {
-  term: string;
-  definition: string;
-}
-
-export interface DocumentSummary {
-  chapterSummaries: ChapterSummary[];
-  keyTakeaways: string[];
-  glossary: GlossaryTerm[];
-}
-
 export interface PastQuestionSet {
   id: string;
   name: string;
