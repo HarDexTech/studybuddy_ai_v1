@@ -69,6 +69,7 @@ export default function Home() {
   const [documentInfo, setDocumentInfo] = useState<{
     text: string;
     file: { name: string; type: string; size: number };
+    structuredText?: string;
   } | null>(null);
   const [initialQuestions, setInitialQuestions] = useState<Question[]>([]);
   const [results, setResults] = useState<TestResult[]>([]);
@@ -85,6 +86,7 @@ export default function Home() {
   const [testOrigin, setTestOrigin] = useState<"studying" | "summarizing">(
     "studying",
   );
+  const [testCreationMode, setTestCreationMode] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -219,17 +221,29 @@ export default function Home() {
   const handleDocumentUploaded = (
     docText: string,
     docFile: { name: string; type: string; size: number },
+    docStructuredText?: string,
   ) => {
-    setDocumentInfo({ text: docText, file: docFile });
+    setDocumentInfo({
+      text: docText,
+      file: docFile,
+      structuredText: docStructuredText,
+    });
     setEffectiveDocumentText(docText);
     setRestoreSnapshot(null);
     setShowRestoredSessionNotice(false);
+    setTestCreationMode(false);
     setView("studying");
   };
 
   const handleStartTestCreation = (origin: "studying" | "summarizing") => {
     setTestOrigin(origin);
+    setTestCreationMode(true);
     setView("upload"); // Reuse upload view for test settings
+  };
+
+  const handleBackToUpload = () => {
+    setTestCreationMode(false);
+    setView("upload");
   };
 
   const handleSummarize = () => {
@@ -269,6 +283,7 @@ export default function Home() {
     setPendingRestore(null);
     setRestoreSnapshot(null);
     setShowRestoredSessionNotice(false);
+    setTestCreationMode(false);
   };
 
   const renderView = () => {
@@ -278,7 +293,7 @@ export default function Home() {
           <UploadView
             onDocumentUploaded={handleDocumentUploaded}
             onTestGenerated={handleTestGenerated}
-            existingDocument={documentInfo}
+            existingDocument={testCreationMode ? documentInfo : null}
             onBack={() => setView(testOrigin)}
           />
         );
@@ -288,10 +303,11 @@ export default function Home() {
             <StudyView
               document={documentInfo.file}
               documentText={documentInfo.text}
+              structuredText={documentInfo.structuredText}
               onStartTest={() => handleStartTestCreation("studying")}
               onStartNew={handleStartNew}
               onSummarize={handleSummarize}
-              onBack={() => setView("upload")}
+              onBack={handleBackToUpload}
             />
           )
         );
@@ -303,6 +319,7 @@ export default function Home() {
                 name: documentInfo.file.name,
                 type: documentInfo.file.type,
                 text: documentInfo.text,
+                structuredText: documentInfo.structuredText,
               }]}
               onStartTest={() => handleStartTestCreation("summarizing")}
               onStartNew={handleStartNew}

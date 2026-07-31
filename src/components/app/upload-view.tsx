@@ -11,6 +11,7 @@ import { generateBatchTestQuestions } from "@/ai/flows/generate-batch-test-quest
 import { generateCrossDocumentQuestions } from "@/ai/flows/generate-cross-document-questions";
 import { extractTopicSection } from "@/ai/flows/extract-topic-section";
 import { analyzePastQuestionTopics } from "@/ai/flows/analyze-past-question-topics";
+import { structureDocument } from "@/ai/flows/structure-document";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import {
   AlertDialog,
@@ -90,6 +91,7 @@ type UploadViewProps = {
   onDocumentUploaded: (
     text: string,
     file: { name: string; type: string; size: number },
+    structuredText?: string,
   ) => void;
   onTestGenerated: (
     questions: Question[],
@@ -112,6 +114,8 @@ const INITIAL_GENERATION_MAX_RETRIES = 1;
 const OCR_TEXT_MIN_LENGTH = 800;
 const OCR_TEXT_PER_PAGE_MIN = 120;
 const OCR_PAGE_RENDER_SCALE = 2;
+const PDF_HEADING_FONT_RATIO = 1.25;
+const PDF_HEADING_MAX_WORDS = 12;
 
 const AVAILABLE_QUESTION_TYPES: QuestionType[] = [
   "multiple choice",
@@ -392,6 +396,17 @@ export function UploadView({
     );
   };
 
+  const getPdfFontSize = (item: {
+    transform?: number[];
+    height?: number;
+  }): number => {
+    if (typeof item.height === "number" && item.height > 0) return item.height;
+    const a = item.transform?.[0];
+    if (typeof a === "number" && a > 0) return a;
+    const d = Math.abs(item.transform?.[3] ?? 0);
+    return d > 0 ? d : 0;
+  };
+
   const extractNativePdfText = async (pdf: pdfjs.PDFDocumentProxy) => {
     let text = "";
 
@@ -403,9 +418,83 @@ export function UploadView({
       );
       const page = await pdf.getPage(i);
       const content = await page.getTextContent();
-      text +=
-        content.items.map((item) => ("str" in item ? item.str : "")).join(" ") +
-        "\n";
+
+      const items = content.items.filter(
+        (item) =>
+          "str" in item &&
+          typeof (item as { str?: unknown }).str === "string" &&
+          (item as { str: string }).str.trim().length > 0 &&
+          Array.isArray(item.transform),
+      ) as unknown as {
+        str: string;
+        transform: number[];
+        height: number;
+        hasEOL: boolean;
+      }[];
+
+      if (items.length === 0) continue;
+
+      // Most-common font size on the page is treated as the body text size.
+      const pageFontCounts = new Map<number, number>();
+      for (const item of items) {
+        const key = Math.round(getPdfFontSize(item) * 2) / 2;
+        pageFontCounts.set(key, (pageFontCounts.get(key) ?? 0) + 1);
+      }
+      let bodyFontSize = 0;
+      let bodyFontCount = 0;
+      for (const [size, count] of pageFontCounts) {
+        if (count > bodyFontCount) {
+          bodyFontCount = count;
+          bodyFontSize = size;
+        }
+      }
+
+      // Group items into visual lines (hasEOL marks the end of a line) and
+      // prefix lines whose font size is meaningfully above the body size with
+      // "## " so the AI gets real structural signal instead of guessing.
+      let lineText = "";
+      let lineSizes: number[] = [];
+      const flushLine = () => {
+        const trimmed = lineText.trim();
+        if (!trimmed) {
+          lineText = "";
+          lineSizes = [];
+          return;
+        }
+
+        const sizeCounts = new Map<number, number>();
+        let dominantSize = 0;
+        let dominantCount = 0;
+        for (const rawSize of lineSizes) {
+          const key = Math.round(rawSize * 2) / 2;
+          const count = (sizeCounts.get(key) ?? 0) + 1;
+          sizeCounts.set(key, count);
+          if (count > dominantCount) {
+            dominantCount = count;
+            dominantSize = key;
+          }
+        }
+
+        const wordCount = trimmed.split(/\s+/).length;
+        const isLikelyHeading =
+          bodyFontSize > 0 &&
+          dominantSize >= bodyFontSize * PDF_HEADING_FONT_RATIO &&
+          wordCount <= PDF_HEADING_MAX_WORDS &&
+          !/^[\d.,\s]+$/.test(trimmed);
+
+        text += `${isLikelyHeading ? `## ${trimmed}\n\n` : `${trimmed}\n`}`;
+
+        lineText = "";
+        lineSizes = [];
+      };
+
+      for (const item of items) {
+        if (lineText) lineText += " ";
+        lineText += item.str.trim();
+        lineSizes.push(getPdfFontSize(item));
+        if (item.hasEOL) flushLine();
+      }
+      flushLine();
     }
 
     return text;
@@ -641,14 +730,37 @@ export function UploadView({
         return;
       }
 
+      // Best-effort structuring pass for formatted documents. Plain text is
+      // skipped (structure may already exist). On failure we keep raw text.
+      let structuredText: string | undefined;
+      const isStructuredEligible =
+        selectedFile.type === "application/pdf" ||
+        selectedFile.type ===
+          "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
+        selectedFile.type ===
+          "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+
+      if (isStructuredEligible) {
+        setLoadingMessage("Adding structure to document text...");
+        try {
+          structuredText = await structureDocument(text);
+        } catch (err) {
+          console.error(
+            "Structure pass failed, continuing with raw text:",
+            err,
+          );
+        }
+      }
+
       addRecentDocument({
         ...fileInfo,
         id: `${selectedFile.name}-${selectedFile.lastModified}`,
         lastModified: selectedFile.lastModified,
         text: text,
+        structuredText,
       }).catch((err) => console.error("Failed to persist recent document:", err));
 
-      onDocumentUploaded(text, fileInfo);
+      onDocumentUploaded(text, fileInfo, structuredText);
     } catch (error) {
       console.error("Parsing error:", error);
       handleError("Failed to parse the document.");
@@ -659,11 +771,15 @@ export function UploadView({
   };
 
   const handleSelectRecent = (doc: CachedDocument) => {
-    onDocumentUploaded(doc.text, {
-      name: doc.name,
-      type: doc.type,
-      size: doc.size,
-    });
+    onDocumentUploaded(
+      doc.text,
+      {
+        name: doc.name,
+        type: doc.type,
+        size: doc.size,
+      },
+      doc.structuredText,
+    );
   };
 
   const handleUseManualText = () => {

@@ -56,6 +56,7 @@ export interface CachedDocument {
   size: number;
   lastModified: number;
   text: string;
+  structuredText?: string;
 }
 
 export interface PastQuestionSet {

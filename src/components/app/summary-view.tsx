@@ -24,7 +24,7 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import jsPDF from "jspdf";
 
-type DocInfo = { name: string; type: string; text: string };
+type DocInfo = { name: string; type: string; text: string; structuredText?: string };
 
 type SummaryViewProps = {
   documents: DocInfo[];
@@ -59,7 +59,11 @@ export function SummaryView({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          documents: documents.map((d) => ({ name: d.name, content: d.text })),
+          documents: documents.map((d) => ({
+            name: d.name,
+            content: d.text,
+            structuredText: d.structuredText,
+          })),
           forceRegenerate: force,
         }),
       });
@@ -264,7 +268,7 @@ export function SummaryView({
             </div>
           ) : summary ? (
             <>
-              <div className="max-h-[65vh] overflow-y-auto pr-4">
+              <div className="max-h-[65vh] scrollbar-none overflow-y-auto pr-4">
                 <div className="prose prose-slate dark:prose-invert max-w-none prose-headings:font-semibold prose-h2:mt-8 prose-h2:mb-4 prose-h3:mt-6 prose-h3:mb-3 prose-p:leading-relaxed prose-li:leading-relaxed prose-table:border-collapse prose-th:border prose-th:px-3 prose-th:py-2 prose-td:border prose-td:px-3 prose-td:py-2 prose-code:bg-muted prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-code:text-sm prose-pre:bg-muted prose-pre:rounded-lg prose-blockquote:border-l-4 prose-blockquote:border-primary prose-blockquote:pl-4 prose-blockquote:text-muted-foreground">
                   <ReactMarkdown remarkPlugins={[remarkGfm]}>{summary}</ReactMarkdown>
                 </div>

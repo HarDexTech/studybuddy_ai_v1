@@ -7,11 +7,14 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Input } from '@/components/ui/input';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Loader2, Sparkles, MessageCircleQuestion, FileText, Pencil, PlusCircle, ChevronLeft } from 'lucide-react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { useToast } from '@/hooks/use-toast';
 
 type StudyViewProps = {
     document: { name: string, type: string };
     documentText: string;
+    structuredText?: string;
     onStartTest: () => void;
     onStartNew: () => void;
     onSummarize?: () => void;
@@ -88,18 +91,25 @@ function QnaSection({ documentText }: { documentText: string }) {
     );
 }
 
-function DocumentPreview({ file, textContent }: { file: { name: string, type: string }, textContent: string }) {
+function DocumentPreview({ file, textContent, structuredText }: { file: { name: string, type: string }, textContent: string, structuredText?: string }) {
+    const hasStructured = Boolean(structuredText);
     return (
         <div className="space-y-4">
             <h3 className="text-lg font-semibold">Extracted Text</h3>
             <ScrollArea className="h-96 w-full rounded-md border p-4">
-                <p className="text-sm whitespace-pre-wrap">{textContent}</p>
+                {hasStructured ? (
+                    <div className="prose prose-slate dark:prose-invert max-w-none prose-headings:font-semibold prose-h3:mt-4 prose-h3:mb-2 prose-p:leading-relaxed prose-li:leading-relaxed prose-table:border-collapse prose-th:border prose-th:px-3 prose-th:py-2 prose-td:border prose-td:px-3 prose-td:py-2 prose-code:bg-muted prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-code:text-sm prose-pre:bg-muted prose-pre:rounded-lg prose-blockquote:border-l-4 prose-blockquote:border-primary prose-blockquote:pl-4 prose-blockquote:text-muted-foreground">
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{structuredText!}</ReactMarkdown>
+                    </div>
+                ) : (
+                    <p className="text-sm whitespace-pre-wrap">{textContent}</p>
+                )}
             </ScrollArea>
         </div>
     );
 }
 
-export function StudyView({ document, documentText, onStartTest, onStartNew, onSummarize, onBack }: StudyViewProps) {
+export function StudyView({ document, documentText, structuredText, onStartTest, onStartNew, onSummarize, onBack }: StudyViewProps) {
     return (
         <div className="w-full max-w-5xl mx-auto flex-grow flex flex-col space-y-6 animate-in fade-in-50 duration-500">
             <Button onClick={onBack ?? onStartNew} variant="ghost" size="sm" className="gap-1 self-start">
@@ -136,7 +146,7 @@ export function StudyView({ document, documentText, onStartTest, onStartNew, onS
                 </CardHeader>
                 <CardContent className="space-y-8">
                      <QnaSection documentText={documentText} />
-                     <DocumentPreview file={document} textContent={documentText} />
+                     <DocumentPreview file={document} textContent={documentText} structuredText={structuredText} />
                 </CardContent>
             </Card>
         </div>

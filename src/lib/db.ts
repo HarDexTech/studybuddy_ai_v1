@@ -56,6 +56,7 @@ export const SCHEMA_DDL = /* sql */ `
     size BIGINT NOT NULL,
     last_modified BIGINT NOT NULL,
     text TEXT NOT NULL,
+    structured_text TEXT,
     created_at BIGINT NOT NULL DEFAULT floor(extract(epoch from now()))::bigint
   );
 

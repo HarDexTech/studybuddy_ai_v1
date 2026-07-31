@@ -11,6 +11,10 @@ import { z } from 'zod';
 export const DocumentSchema = z.object({
   name: z.string().describe('The file name of the document.'),
   content: z.string().describe('The full text content of the document.'),
+  structuredText: z
+    .string()
+    .optional()
+    .describe('Pre-structured markdown of the same content; preferred over content when present.'),
 });
 
 export const PriorityTopicSchema = z.object({
@@ -36,15 +40,22 @@ export type GenerateDocumentSummaryInput = z.infer<typeof GenerateDocumentSummar
 
 export const MAX_DOC_CHARS_PER_DOC = 50000;
 
-export function truncateDocuments(docs: { name: string; content: string }[]): { name: string; content: string }[] {
+export function truncateDocuments(docs: { name: string; content: string; structuredText?: string }[]): { name: string; content: string; structuredText?: string }[] {
   return docs.map((d) => {
-    if (d.content.length <= MAX_DOC_CHARS_PER_DOC) return d;
-    return { ...d, content: d.content.slice(0, MAX_DOC_CHARS_PER_DOC) + '\n\n[... document truncated for length ...]' };
+    const effective = d.structuredText || d.content;
+    if (effective.length <= MAX_DOC_CHARS_PER_DOC) return d;
+    const note = '\n\n[... document truncated for length ...]';
+    if (d.structuredText) {
+      return { ...d, structuredText: effective.slice(0, MAX_DOC_CHARS_PER_DOC) + note };
+    }
+    return { ...d, content: effective.slice(0, MAX_DOC_CHARS_PER_DOC) + note };
   });
 }
 
-export function docSignature(documents: { name: string; content: string }[], priorityTopics?: { topic: string; frequency?: number }[]): string {
-  const docsPart = documents.map((d) => `${d.name}:${d.content.slice(0, 2000)}`).join('||');
+export function docSignature(documents: { name: string; content: string; structuredText?: string }[], priorityTopics?: { topic: string; frequency?: number }[]): string {
+  const docsPart = documents
+    .map((d) => `${d.name}:${(d.structuredText || d.content).slice(0, 2000)}`)
+    .join('||');
   const topicsPart = priorityTopics
     ? priorityTopics.map((t) => `${t.topic}:${t.frequency ?? 0}`).sort().join(',')
     : '';
@@ -64,12 +75,16 @@ Capillarity draws water upward through small pore spaces against gravity.
 ### Percolation
 Percolation is the deep drainage of water beyond the root zone.`;
 
-export const SUMMARY_USER_PROMPT = (documents: { name: string; content: string }[], priorityTopics?: { topic: string; frequency?: number }[]) => {
+export const SUMMARY_USER_PROMPT = (documents: { name: string; content: string; structuredText?: string }[], priorityTopics?: { topic: string; frequency?: number }[]) => {
   const docsText = documents
-    .map((d, i) => `DOCUMENT ${i + 1}: "${d.name}"\n\`\`\`\n${d.content}\n\`\`\``)
+    .map((d, i) => {
+      const effective = d.structuredText || d.content;
+      return `DOCUMENT ${i + 1}: "${d.name}"\n\`\`\`\n${effective}\n\`\`\``;
+    })
     .join('\n\n');
 
   const hasPriorities = priorityTopics && priorityTopics.length > 0;
+  const hasStructuredText = documents.some((d) => Boolean(d.structuredText));
 
   let prompt = `Analyze the provided document${documents.length > 1 ? 's' : ''} and produce a comprehensive, exam-ready study guide in raw markdown.
 
@@ -90,14 +105,23 @@ ${hasPriorities ? `5. **Frequently Tested Topics** — Extra detail with 🎯 ma
 ${documents.length > 1 ? `6. **Connections & Contrasts** — Cross-document synthesis.` : ''}
 
 ## CRITICAL Heading Rules
-EVERY topic name, sub-topic name, named force, named classification, named type — anything that introduces a new concept — MUST be its own ### or #### heading line.
+${
+  hasStructuredText
+    ? `The documents below already contain markdown structure. PRESERVE and REFINE that existing structure rather than inferring it from scratch.
+- Keep every existing ## / ### / #### heading and its hierarchy as-is; fix only obvious inconsistencies (e.g. a heading whose heading level doesn't match its siblings).
+- Add missing ### or #### headings only where a new concept clearly lacks one.
+- Keep the existing list markers, bullet structure, and table formatting.
+- Do NOT flatten, merge, renumber, or rewrite the existing headings.
+A heading line should be short (1-6 words), have no trailing period, and stand alone on its own line.`
+    : `EVERY topic name, sub-topic name, named force, named classification, named type — anything that introduces a new concept — MUST be its own ### or #### heading line.
 - "Definition" → ### Definition
 - "Capillary Forces" → #### Capillary Forces
 - "Factors Affecting Infiltration" → #### Factors Affecting Infiltration
 - "Darcy's Law" → ### Darcy's Law
 - "Infiltration" → ### Infiltration
 Never present a title as a plain sentence — ALWAYS prefix it with the correct number of #.
-A heading line should be short (1-6 words), have no trailing period, and stand alone on its own line.
+A heading line should be short (1-6 words), have no trailing period, and stand alone on its own line.`
+}
 
 ${HEADING_EXAMPLE}
 

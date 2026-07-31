@@ -52,6 +52,17 @@ async function main(): Promise<void> {
     await sql.query(`ALTER TABLE summaries ALTER COLUMN summary TYPE TEXT;`, []);
   }
 
+  // Add structured_text column to documents (markdown structuring pass).
+  const hasStructuredColumn = await sql.query(
+    `SELECT column_name FROM information_schema.columns
+     WHERE table_name = 'documents' AND column_name = 'structured_text'`,
+    [],
+  );
+  if (hasStructuredColumn.length === 0) {
+    console.log("→ Adding structured_text column to documents…");
+    await sql.query(`ALTER TABLE documents ADD COLUMN structured_text TEXT;`, []);
+  }
+
   // SCHEMA_DDL contains multiple statements. The neon() tagged template
   // treats interpolated values as bind parameters, but DDL (CREATE TABLE, etc.)
   // cannot be parameterized. Instead we use neon()'s `.query()` method, which

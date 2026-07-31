@@ -23,6 +23,7 @@ interface DocRow {
   size: number;
   last_modified: number;
   text: string;
+  structured_text: string | null;
   created_at: number;
 }
 
@@ -34,6 +35,7 @@ function toCachedDocument(row: DocRow): CachedDocument {
     size: row.size,
     lastModified: row.last_modified,
     text: row.text,
+    structuredText: row.structured_text ?? undefined,
   };
 }
 
@@ -42,7 +44,7 @@ export async function getRecentDocuments(): Promise<CachedDocument[]> {
   if (!userId) return [];
   try {
     const rows = (await sql`
-      SELECT id, user_id, name, type, size, last_modified, text, created_at
+      SELECT id, user_id, name, type, size, last_modified, text, structured_text, created_at
       FROM documents WHERE user_id = ${userId}
       ORDER BY created_at DESC LIMIT ${MAX_RECENT_DOCS}
     `) as DocRow[];
@@ -60,9 +62,13 @@ export async function addRecentDocument(doc: CachedDocument): Promise<void> {
       doc.text.length > MAX_STORED_DOC_TEXT_CHARS
         ? doc.text.slice(0, MAX_STORED_DOC_TEXT_CHARS)
         : doc.text;
+    const trimmedStructured =
+      doc.structuredText && doc.structuredText.length > MAX_STORED_DOC_TEXT_CHARS
+        ? doc.structuredText.slice(0, MAX_STORED_DOC_TEXT_CHARS)
+        : doc.structuredText;
     await sql`
-      INSERT INTO documents (id, user_id, name, type, size, last_modified, text)
-      VALUES (${doc.id}, ${userId}, ${doc.name}, ${doc.type}, ${doc.size}, ${doc.lastModified}, ${trimmedText})
+      INSERT INTO documents (id, user_id, name, type, size, last_modified, text, structured_text)
+      VALUES (${doc.id}, ${userId}, ${doc.name}, ${doc.type}, ${doc.size}, ${doc.lastModified}, ${trimmedText}, ${trimmedStructured ?? null})
       ON CONFLICT(id) DO UPDATE SET
         user_id = EXCLUDED.user_id,
         name = EXCLUDED.name,
@@ -70,6 +76,7 @@ export async function addRecentDocument(doc: CachedDocument): Promise<void> {
         size = EXCLUDED.size,
         last_modified = EXCLUDED.last_modified,
         text = EXCLUDED.text,
+        structured_text = EXCLUDED.structured_text,
         created_at = floor(extract(epoch from now()))::bigint
     `;
 
@@ -81,7 +88,7 @@ export async function addRecentDocument(doc: CachedDocument): Promise<void> {
     after(async () => {
       const { generateDocumentSummary } = await import("@/ai/flows/generate-document-summary");
       await generateDocumentSummary({
-        documents: [{ name: doc.name, content: trimmedText }],
+        documents: [{ name: doc.name, content: trimmedText, structuredText: trimmedStructured }],
       }).catch((err) =>
         console.error("Background summary generation failed:", err),
       );
@@ -118,7 +125,7 @@ export async function getMultipleRecentDocuments(
     // Postgres `= ANY($n::text[])` replaces SQLite's `json_each(?)`.
     // The neon() driver accepts JS arrays directly as a parameter.
     const rows = (await sql`
-      SELECT id, user_id, name, type, size, last_modified, text, created_at
+      SELECT id, user_id, name, type, size, last_modified, text, structured_text, created_at
       FROM documents WHERE user_id = ${userId} AND id = ANY(${ids}::text[])
     `) as DocRow[];
     // Preserve caller's order.
