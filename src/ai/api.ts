@@ -1,4 +1,4 @@
-import { isRateLimitError } from "./genkit";
+import { isRateLimitError, withRetry } from "./genkit";
 
 // ---------------------------------------------------------------------------
 // DeepSeek client — OpenAI-compatible API via fetch
@@ -233,6 +233,8 @@ export interface CallNimJsonOptions {
   temperature?: number;
   maxOutputTokens?: number;
   thinkingDisabled?: boolean;
+  skipStripFences?: boolean;
+  timeoutMs?: number;
 }
 
 export async function callNimJson<T>(
@@ -248,12 +250,16 @@ export async function callNimJson<T>(
     );
   }
 
+  const { skipStripFences = false, timeoutMs, ...modelOpts } = options;
   let lastError: unknown = null;
 
   for (const modelName of MODEL_PRIORITY) {
     try {
-      const text = await deepseekChat(modelName, systemInstruction, userPrompt, options);
-      const cleaned = stripCodeFences(text).trim();
+      const text = await withRetry(
+        () => deepseekChat(modelName, systemInstruction, userPrompt, modelOpts),
+        { timeoutMs },
+      );
+      const cleaned = skipStripFences ? text.trim() : stripCodeFences(text).trim();
       return parse(cleaned);
     } catch (error) {
       lastError = error;
@@ -285,6 +291,7 @@ export interface CallNimJsonStreamOptions {
   onChunk?: (accumulated: string) => void;
   skipStripFences?: boolean;
   thinkingDisabled?: boolean;
+  timeoutMs?: number;
 }
 
 export async function callNimJsonStream(
@@ -299,17 +306,20 @@ export async function callNimJsonStream(
     );
   }
 
+  const { onChunk, skipStripFences = false, timeoutMs, ...modelOpts } = options;
   let lastError: unknown = null;
 
   for (const modelName of MODEL_PRIORITY) {
     try {
-      const text = await deepseekChatStream(modelName, systemInstruction, userPrompt, {
-        temperature: options.temperature,
-        maxOutputTokens: options.maxOutputTokens,
-        onChunk: options.onChunk,
-        thinkingDisabled: options.thinkingDisabled,
-      });
-      return options.skipStripFences ? text.trim() : stripCodeFences(text).trim();
+      const text = await withRetry(
+        () =>
+          deepseekChatStream(modelName, systemInstruction, userPrompt, {
+            ...modelOpts,
+            onChunk,
+          }),
+        { timeoutMs },
+      );
+      return skipStripFences ? text.trim() : stripCodeFences(text).trim();
     } catch (error) {
       lastError = error;
       console.warn(

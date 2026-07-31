@@ -117,6 +117,16 @@ const OCR_PAGE_RENDER_SCALE = 2;
 const PDF_HEADING_FONT_RATIO = 1.25;
 const PDF_HEADING_MAX_WORDS = 12;
 
+const PDF_EXTRACT_GLYPH_RE =
+  /[\u2610\u2611\u2612\u25A1\uFFFD\uE000-\uF8FF]/g;
+const PDF_EXTRACT_CONTROL_RE =
+  /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g;
+
+const cleanExtractedText = (raw: string): string =>
+  raw
+    .replace(PDF_EXTRACT_GLYPH_RE, "-")
+    .replace(PDF_EXTRACT_CONTROL_RE, "");
+
 const AVAILABLE_QUESTION_TYPES: QuestionType[] = [
   "multiple choice",
   "fill-in-the-blank",
@@ -497,7 +507,7 @@ export function UploadView({
       flushLine();
     }
 
-    return text;
+    return cleanExtractedText(text);
   };
 
   const runPdfOcr = async (pdf: pdfjs.PDFDocumentProxy) => {
@@ -698,6 +708,8 @@ export function UploadView({
         );
         return;
       }
+
+      text = cleanExtractedText(text);
 
       if (!text.trim()) {
         handleError(

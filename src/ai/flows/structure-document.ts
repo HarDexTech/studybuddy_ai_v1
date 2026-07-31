@@ -28,7 +28,6 @@ TEXT:
 ${text}`;
 
 const MAX_CHUNK_CHARS = 6000;
-const CHUNK_TIMEOUT_MS = 90_000;
 
 function splitIntoChunks(text: string, maxChars: number): string[] {
   const blocks = text
@@ -79,19 +78,12 @@ function maxOutputTokensFor(chunkLength: number): number {
 }
 
 async function structureChunk(text: string): Promise<string> {
-  return await Promise.race([
-    callNimJsonStream(SYSTEM, USER_PROMPT(text), {
-      maxOutputTokens: maxOutputTokensFor(text.length),
-      skipStripFences: true,
-      thinkingDisabled: true,
-    }),
-    new Promise<string>((_, reject) =>
-      setTimeout(
-        () => reject(new Error("STRUCTURE_TIMEOUT: structuring chunk timed out")),
-        CHUNK_TIMEOUT_MS,
-      ),
-    ),
-  ]);
+  return await callNimJsonStream(SYSTEM, USER_PROMPT(text), {
+    maxOutputTokens: maxOutputTokensFor(text.length),
+    skipStripFences: true,
+    thinkingDisabled: true,
+    timeoutMs: 90_000,
+  });
 }
 
 export async function structureDocument(rawText: string): Promise<string> {

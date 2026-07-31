@@ -1,5 +1,6 @@
 import { NextRequest } from "next/server";
 import { MODEL_PRIORITY, deepseekChatStreamChunks } from "@/ai/api";
+import { withRetry } from "@/ai/genkit";
 import {
   GenerateDocumentSummaryInputSchema,
   SUMMARY_SYSTEM,
@@ -42,7 +43,7 @@ export async function POST(request: NextRequest) {
     return Response.json({ error: message }, { status });
   }
 
-  let documents: { name: string; content: string }[];
+  let documents: { name: string; content: string; structuredText?: string }[];
   let priorityTopics: { topic: string; frequency?: number }[] | undefined;
   let forceRegenerate: boolean | undefined;
 
@@ -71,45 +72,40 @@ export async function POST(request: NextRequest) {
   }
 
   const truncated = truncateDocuments(documents);
-  const model = MODEL_PRIORITY[0];
 
   const encoder = new TextEncoder();
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
-      let full = "";
-      let lastFinishReason = "";
-      let reasoningLen = 0;
       try {
-        for await (const delta of deepseekChatStreamChunks(
-          model,
-          SUMMARY_SYSTEM,
-          SUMMARY_USER_PROMPT(truncated, priorityTopics),
-          {
-            maxOutputTokens: SUMMARY_MAX_OUTPUT_TOKENS,
-            thinkingDisabled: true,
-          },
-        )) {
-          if (delta.content) {
-            full += delta.content;
-            controller.enqueue(encoder.encode(delta.content));
+        const model = MODEL_PRIORITY[0];
+        const raw = await withRetry(async () => {
+          let buf = "";
+          for await (const delta of deepseekChatStreamChunks(
+            model,
+            SUMMARY_SYSTEM,
+            SUMMARY_USER_PROMPT(truncated, priorityTopics),
+            {
+              maxOutputTokens: SUMMARY_MAX_OUTPUT_TOKENS,
+              thinkingDisabled: true,
+            },
+          )) {
+            if (delta.content) buf += delta.content;
           }
-          if (delta.reasoningContent) reasoningLen += delta.reasoningContent.length;
-          if (delta.finishReason) lastFinishReason = delta.finishReason;
-        }
+          if (!buf.trim()) {
+            throw new Error(
+              "AI_TEMP_UNAVAILABLE: DeepSeek returned empty response.",
+            );
+          }
+          return buf;
+        });
 
-        if (!full.trim()) {
-          throw new Error(
-            `AI_TEMP_UNAVAILABLE: DeepSeek returned empty response. ` +
-              `finish_reason="${lastFinishReason || 'none'}" reasoning_content_length=${reasoningLen}. ` +
-              `model="${model}" max_tokens=${SUMMARY_MAX_OUTPUT_TOKENS}.`,
-          );
-        }
-
-        const cleaned = normalizeHeadings(full);
+        const cleaned = normalizeHeadings(raw);
         checkHeadingHealth(cleaned);
         saveSummary(sig, cleaned).catch((err) =>
           console.error("Failed to cache summary:", err),
         );
+
+        controller.enqueue(encoder.encode(cleaned));
         controller.close();
       } catch (error) {
         console.error("[generate-summary] streaming failed:", error);

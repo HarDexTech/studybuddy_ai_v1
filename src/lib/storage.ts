@@ -80,7 +80,8 @@ export async function addRecentDocument(doc: CachedDocument): Promise<void> {
         created_at = floor(extract(epoch from now()))::bigint
     `;
 
-    await indexDocument(doc.id, userId, trimmedText).catch((err) =>
+    const ragText = trimmedStructured ?? trimmedText;
+    await indexDocument(doc.id, userId, ragText).catch((err) =>
       console.error("Failed to index document for RAG:", err),
     );
 
