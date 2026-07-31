@@ -218,6 +218,7 @@ export interface CallNimJsonStreamOptions {
   temperature?: number;
   maxOutputTokens?: number;
   onChunk?: (accumulated: string) => void;
+  skipStripFences?: boolean;
 }
 
 export async function callNimJsonStream(
@@ -236,11 +237,12 @@ export async function callNimJsonStream(
 
   for (const modelName of MODEL_PRIORITY) {
     try {
-      return await deepseekChatStream(modelName, systemInstruction, userPrompt, {
+      const text = await deepseekChatStream(modelName, systemInstruction, userPrompt, {
         temperature: options.temperature,
         maxOutputTokens: options.maxOutputTokens,
         onChunk: options.onChunk,
       });
+      return options.skipStripFences ? text.trim() : stripCodeFences(text).trim();
     } catch (error) {
       lastError = error;
       console.warn(
