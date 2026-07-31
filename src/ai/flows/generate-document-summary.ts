@@ -117,6 +117,7 @@ export async function generateDocumentSummary(input: GenerateDocumentSummaryInpu
     callNimJsonStream(SYSTEM, USER_PROMPT(truncated, input.priorityTopics), {
       maxOutputTokens: 12000,
       skipStripFences: true,
+      thinkingDisabled: true,
     }),
     new Promise<string>((_, reject) =>
       setTimeout(() => reject(new Error("AI_TEMP_UNAVAILABLE: summary generation timed out")), SUMMARY_TIMEOUT_MS),

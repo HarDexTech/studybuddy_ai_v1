@@ -33,10 +33,10 @@ async function deepseekChat(
   model: string,
   systemInstruction: string,
   userPrompt: string,
-  options: { temperature?: number; maxOutputTokens?: number } = {},
+  options: { temperature?: number; maxOutputTokens?: number; thinkingDisabled?: boolean } = {},
 ): Promise<string> {
   const temperature = options.temperature ?? 0.7;
-  const maxOutputTokens = options.maxOutputTokens ?? 1024;
+  const maxOutputTokens = options.maxOutputTokens ?? 4096;
 
   const body: Record<string, unknown> = {
     model,
@@ -48,6 +48,10 @@ async function deepseekChat(
     max_tokens: maxOutputTokens,
     stream: false,
   };
+
+  if (options.thinkingDisabled) {
+    body.thinking = { type: "disabled" };
+  }
 
   const res = await fetch(`${DEEPSEEK_BASE_URL}/chat/completions`, {
     method: "POST",
@@ -70,7 +74,13 @@ async function deepseekChat(
   const json = await res.json();
   const text = json.choices?.[0]?.message?.content;
   if (!text?.trim()) {
-    throw new Error("AI_TEMP_UNAVAILABLE: DeepSeek returned empty response.");
+    const reason = json.choices?.[0]?.finish_reason ?? "unknown";
+    const reasoningLen = (json.choices?.[0]?.message?.reasoning_content as string)?.length ?? 0;
+    throw new Error(
+      `AI_TEMP_UNAVAILABLE: DeepSeek returned empty response. ` +
+        `finish_reason="${reason}" reasoning_content_length=${reasoningLen}. ` +
+        `model="${model}" max_tokens=${maxOutputTokens}.`,
+    );
   }
   return text.trim();
 }
@@ -83,10 +93,11 @@ async function deepseekChatStream(
     temperature?: number;
     maxOutputTokens?: number;
     onChunk?: (text: string) => void;
+    thinkingDisabled?: boolean;
   } = {},
 ): Promise<string> {
   const temperature = options.temperature ?? 0.7;
-  const maxOutputTokens = options.maxOutputTokens ?? 1024;
+  const maxOutputTokens = options.maxOutputTokens ?? 4096;
 
   const body: Record<string, unknown> = {
     model,
@@ -98,6 +109,10 @@ async function deepseekChatStream(
     max_tokens: maxOutputTokens,
     stream: true,
   };
+
+  if (options.thinkingDisabled) {
+    body.thinking = { type: "disabled" };
+  }
 
   const res = await fetch(`${DEEPSEEK_BASE_URL}/chat/completions`, {
     method: "POST",
@@ -122,7 +137,9 @@ async function deepseekChatStream(
 
   const decoder = new TextDecoder();
   let full = "";
+  let reasoning = "";
   let buffer = "";
+  let lastFinishReason = "";
 
   try {
     while (true) {
@@ -145,6 +162,10 @@ async function deepseekChatStream(
             full += delta;
             options.onChunk?.(full);
           }
+          const rdelta = chunk.choices?.[0]?.delta?.reasoning_content;
+          if (rdelta) reasoning += rdelta;
+          const fr = chunk.choices?.[0]?.finish_reason;
+          if (fr) lastFinishReason = fr;
         } catch {
           // skip malformed SSE chunks
         }
@@ -155,7 +176,11 @@ async function deepseekChatStream(
   }
 
   if (!full.trim()) {
-    throw new Error("AI_TEMP_UNAVAILABLE: DeepSeek returned empty response.");
+    throw new Error(
+      `AI_TEMP_UNAVAILABLE: DeepSeek returned empty response. ` +
+        `finish_reason="${lastFinishReason || 'none'}" reasoning_content_length=${reasoning.length}. ` +
+        `model="${model}" max_tokens=${maxOutputTokens}.`,
+    );
   }
 
   return full.trim();
@@ -168,6 +193,7 @@ async function deepseekChatStream(
 export interface CallNimJsonOptions {
   temperature?: number;
   maxOutputTokens?: number;
+  thinkingDisabled?: boolean;
 }
 
 export async function callNimJson<T>(
@@ -219,6 +245,7 @@ export interface CallNimJsonStreamOptions {
   maxOutputTokens?: number;
   onChunk?: (accumulated: string) => void;
   skipStripFences?: boolean;
+  thinkingDisabled?: boolean;
 }
 
 export async function callNimJsonStream(
@@ -241,6 +268,7 @@ export async function callNimJsonStream(
         temperature: options.temperature,
         maxOutputTokens: options.maxOutputTokens,
         onChunk: options.onChunk,
+        thinkingDisabled: options.thinkingDisabled,
       });
       return options.skipStripFences ? text.trim() : stripCodeFences(text).trim();
     } catch (error) {
