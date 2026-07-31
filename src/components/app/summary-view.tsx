@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { generateDocumentSummary } from "@/ai/flows/generate-document-summary";
 import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -11,7 +12,6 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   Loader2,
   Sparkles,
@@ -233,11 +233,11 @@ export function SummaryView({
             </div>
           ) : summary ? (
             <>
-              <ScrollArea className="max-h-[65vh] pr-4">
+              <div className="max-h-[65vh] overflow-y-auto pr-4">
                 <div className="prose prose-slate dark:prose-invert max-w-none prose-headings:font-semibold prose-h2:mt-8 prose-h2:mb-4 prose-h3:mt-6 prose-h3:mb-3 prose-p:leading-relaxed prose-li:leading-relaxed prose-table:border-collapse prose-th:border prose-th:px-3 prose-th:py-2 prose-td:border prose-td:px-3 prose-td:py-2 prose-code:bg-muted prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-code:text-sm prose-pre:bg-muted prose-pre:rounded-lg prose-blockquote:border-l-4 prose-blockquote:border-primary prose-blockquote:pl-4 prose-blockquote:text-muted-foreground">
-                  <ReactMarkdown>{summary}</ReactMarkdown>
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{summary}</ReactMarkdown>
                 </div>
-              </ScrollArea>
+              </div>
               <div className="flex justify-center gap-4 pt-2">
                 <Button
                   onClick={handleGenerate}
