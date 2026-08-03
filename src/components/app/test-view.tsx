@@ -14,6 +14,7 @@ import type {
   MultipleChoiceQuestion,
   TrueFalseQuestion,
 } from "@/lib/types";
+import { PASS_THRESHOLD } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -78,6 +79,7 @@ type TestViewProps = {
     results: TestResult[];
     currentResult: {
       isCorrect: boolean;
+      score: number;
       feedback: string;
     } | null;
     isAnswered: boolean;
@@ -299,6 +301,8 @@ export function TestView({
   const generationErrorToastId = useRef<string | null>(null);
   const ragContext = useRef<string>("");
   const instantFirstDone = useRef(false);
+  const lastSyncedQuestion = useRef<string | null>(null);
+  const draftsRef = useRef<Record<string, string>>({});
   const [isAskAiDialogOpen, setIsAskAiDialogOpen] = useState(false);
   const [validationSubmitError, setValidationSubmitError] = useState<
     string | null
@@ -342,13 +346,34 @@ export function TestView({
   );
 
   const finishTest = useCallback(
-    (finalResults: TestResult[]) => {
+    (partialResults: TestResult[], reason: string) => {
       clearTestProgress().catch((err) =>
         console.error("Failed to clear test progress:", err),
       );
-      onTestFinished(finalResults, questions.length);
+
+      // Pad missing questions (skipped or never reached) so the results
+      // always contain every generated question.
+      const paddedResults = [...partialResults];
+      const answeredQuestions = new Set(
+        paddedResults.map((r) => r.question.question),
+      );
+
+      questions.forEach((q) => {
+        if (!answeredQuestions.has(q.question)) {
+          paddedResults.push({
+            question: q,
+            userAnswer: "",
+            isCorrect: false,
+            score: 0,
+            feedback: reason,
+          });
+          answeredQuestions.add(q.question);
+        }
+      });
+
+      onTestFinished(paddedResults, questions.length);
     },
-    [onTestFinished, questions.length],
+    [onTestFinished, questions],
   );
 
   useEffect(() => {
@@ -435,6 +460,8 @@ export function TestView({
         }
 
         // Timer is at 1, about to hit 0. Finish the test.
+        // Append the current question if it wasn't answered so its feedback
+        // reads "Time ran out..." instead of the generic skip reason.
         let finalResults = [...results];
         const answeredQuestions = new Set(
           finalResults.map((r) => r.question.question),
@@ -448,23 +475,13 @@ export function TestView({
             question: currentQuestion,
             userAnswer: "",
             isCorrect: false,
+            score: 0,
             feedback: "Time ran out and this question was skipped.",
           });
           answeredQuestions.add(currentQuestion.question);
         }
 
-        questions.forEach((q) => {
-          if (!answeredQuestions.has(q.question)) {
-            finalResults.push({
-              question: q,
-              userAnswer: "",
-              isCorrect: false,
-              feedback: "Time ran out before reaching this question.",
-            });
-          }
-        });
-
-        finishTest(finalResults);
+        finishTest(finalResults, "Time ran out before reaching this question.");
         return 0;
       });
     };
@@ -681,17 +698,32 @@ export function TestView({
       setIsAnswered(true);
       setCurrentResult({
         isCorrect: matchedResult.isCorrect,
+        score:
+          typeof matchedResult.score === "number"
+            ? matchedResult.score
+            : matchedResult.isCorrect
+              ? 100
+              : 0,
         feedback: matchedResult.feedback,
       });
       setUserAnswer(matchedResult.userAnswer);
       setValidationSubmitError(null);
+      lastSyncedQuestion.current = question.question;
       return;
     }
 
-    setUserAnswer("");
+    // The questions array grows as background generation completes batches.
+    // If the displayed question hasn't changed, don't wipe the user's
+    // in-progress answer.
+    if (lastSyncedQuestion.current === question.question) {
+      return;
+    }
+
+    setUserAnswer(draftsRef.current[question.question] ?? "");
     setCurrentResult(null);
     setIsAnswered(false);
     setValidationSubmitError(null);
+    lastSyncedQuestion.current = question.question;
   }, [currentQuestionIndex, questions, results]);
 
   useEffect(() => {
@@ -736,7 +768,11 @@ export function TestView({
         const feedback = isCorrect
           ? "Correct!"
           : `Incorrect. The correct answer is ${(currentQuestion as MultipleChoiceQuestion).correctAnswer}.`;
-        validationResult = { isCorrect, feedback };
+        validationResult = {
+          isCorrect,
+          score: isCorrect ? 100 : 0,
+          feedback,
+        };
       } else if (currentQuestion.type === "true or false") {
         const isCorrect =
           userAnswer ===
@@ -744,7 +780,11 @@ export function TestView({
         const feedback = isCorrect
           ? "Correct!"
           : `Incorrect. The correct answer is ${String((currentQuestion as TrueFalseQuestion).correctAnswer)}.`;
-        validationResult = { isCorrect, feedback };
+        validationResult = {
+          isCorrect,
+          score: isCorrect ? 100 : 0,
+          feedback,
+        };
       } else {
         let attempt = 0;
         let lastError: unknown = null;
@@ -822,6 +862,7 @@ export function TestView({
           ...validationResult,
         }),
       );
+      delete draftsRef.current[currentQuestion.question];
       setIsAnswered(true);
     } catch (error) {
       console.error(error);
@@ -844,6 +885,15 @@ export function TestView({
     }
   };
 
+  const handleDraftChange = useCallback(
+    (value: string) => {
+      if (!currentQuestion) return;
+      draftsRef.current[currentQuestion.question] = value;
+      setUserAnswer(value);
+    },
+    [currentQuestion],
+  );
+
   const handlePrevious = () => {
     if (currentQuestionIndex > 0) {
       setCurrentQuestionIndex((prev) => prev - 1);
@@ -858,25 +908,54 @@ export function TestView({
       return;
     }
 
-    finishTest(results);
+    finishTest(results, "This question was skipped.");
   };
 
   const handleNext = () => {
     if (currentQuestionIndex < totalQuestionsToGenerate - 1) {
       setCurrentQuestionIndex((prev) => prev + 1);
     } else {
-      finishTest(results);
+      finishTest(results, "This question was skipped.");
     }
   };
 
   // Keyboard shortcuts
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (
-        event.target instanceof HTMLTextAreaElement &&
-        event.key === "Enter" &&
-        !event.shiftKey
-      ) {
+      const target = event.target as HTMLElement | null;
+      const inTextarea = target instanceof HTMLTextAreaElement;
+
+      // While typing in a textarea: Enter submits, Shift/Ctrl+Enter inserts a
+      // new line (default behavior), arrow keys move the cursor.
+      if (inTextarea) {
+        if (
+          event.key === "Enter" &&
+          !event.shiftKey &&
+          !event.ctrlKey &&
+          !event.metaKey
+        ) {
+          if (isLoading) return;
+          event.preventDefault();
+          if (isAnswered) {
+            nextButtonRef.current?.click();
+          } else {
+            submitButtonRef.current?.click();
+          }
+        }
+        return;
+      }
+
+      // Arrow keys navigate between questions but never submit the test.
+      if (event.key === "ArrowRight" || event.key === "ArrowLeft") {
+        if (isLoading) return;
+        event.preventDefault();
+        const targetIndex =
+          event.key === "ArrowRight"
+            ? currentQuestionIndex + 1
+            : currentQuestionIndex - 1;
+        if (targetIndex >= 0 && targetIndex < questions.length) {
+          setCurrentQuestionIndex(targetIndex);
+        }
         return;
       }
 
@@ -910,7 +989,7 @@ export function TestView({
           .choices[indexByKey[key]];
 
         if (selectedChoice) {
-          setUserAnswer(selectedChoice);
+          handleDraftChange(selectedChoice);
         }
         return;
       }
@@ -918,11 +997,7 @@ export function TestView({
       if (isMcqOrTf && event.key === "Enter") {
         event.preventDefault();
         submitButtonRef.current?.click();
-      } else if (
-        isText &&
-        event.key === "Enter" &&
-        (event.metaKey || event.ctrlKey || event.shiftKey)
-      ) {
+      } else if (isText && event.key === "Enter") {
         event.preventDefault();
         submitButtonRef.current?.click();
       }
@@ -932,10 +1007,10 @@ export function TestView({
     return () => {
       window.removeEventListener("keydown", handleKeyDown);
     };
-  }, [isAnswered, isLoading, currentQuestion]);
+  }, [isAnswered, isLoading, currentQuestion, currentQuestionIndex, questions.length, handleDraftChange]);
 
   const handleQuit = () => {
-    finishTest(results);
+    finishTest(results, "The test was quit before reaching this question.");
   };
 
   const formatTime = (seconds: number) => {
@@ -951,7 +1026,7 @@ export function TestView({
         return (
           <RadioGroup
             value={userAnswer}
-            onValueChange={setUserAnswer}
+            onValueChange={handleDraftChange}
             disabled={isAnswered || isLoading}
             className="space-y-2"
           >
@@ -976,7 +1051,7 @@ export function TestView({
           <div className="flex flex-col sm:flex-row gap-4">
             <Button
               variant={userAnswer === "true" ? "default" : "outline"}
-              onClick={() => setUserAnswer("true")}
+              onClick={() => handleDraftChange("true")}
               disabled={isAnswered || isLoading}
               className="flex-1 h-12 text-lg"
             >
@@ -984,7 +1059,7 @@ export function TestView({
             </Button>
             <Button
               variant={userAnswer === "false" ? "default" : "outline"}
-              onClick={() => setUserAnswer("false")}
+              onClick={() => handleDraftChange("false")}
               disabled={isAnswered || isLoading}
               className="flex-1 h-12 text-lg"
             >
@@ -997,9 +1072,9 @@ export function TestView({
       default:
         return (
           <Textarea
-            placeholder="Your answer here... (Shift+Enter or Ctrl+Enter to submit)"
+            placeholder="Your answer here... (Enter to submit, Shift+Enter or Ctrl+Enter for new line)"
             value={userAnswer}
-            onChange={(e) => setUserAnswer(e.target.value)}
+            onChange={(e) => handleDraftChange(e.target.value)}
             rows={5}
             disabled={isAnswered || isLoading}
           />
@@ -1115,6 +1190,11 @@ export function TestView({
                     }
                   >
                     {currentResult.isCorrect ? "Correct!" : "Incorrect"}
+                    {" · "}
+                    {typeof currentResult.score === "number"
+                      ? currentResult.score
+                      : 0}
+                    %
                   </AlertTitle>
                   <AlertDescription>{currentResult.feedback}</AlertDescription>
                 </div>
@@ -1222,6 +1302,22 @@ export function TestView({
             )}
           </div>
         </CardFooter>
+        <div className="px-6 pb-4 pt-3 border-t text-xs text-muted-foreground">
+          <span className="font-medium text-foreground">Keyboard:</span>{" "}
+          <kbd className="px-1 py-0.5 rounded bg-muted border border-border">Enter</kbd>{" "}
+          submit ·{" "}
+          <kbd className="px-1 py-0.5 rounded bg-muted border border-border">Shift</kbd>+<kbd className="px-1 py-0.5 rounded bg-muted border border-border">Enter</kbd>{" "}
+          or{" "}
+          <kbd className="px-1 py-0.5 rounded bg-muted border border-border">Ctrl</kbd>+<kbd className="px-1 py-0.5 rounded bg-muted border border-border">Enter</kbd>{" "}
+          new line ·{" "}
+          <kbd className="px-1 py-0.5 rounded bg-muted border border-border">←</kbd>{" "}
+          previous question ·{" "}
+          <kbd className="px-1 py-0.5 rounded bg-muted border border-border">→</kbd>{" "}
+          next question ·{" "}
+          <kbd className="px-1 py-0.5 rounded bg-muted border border-border">A</kbd>-
+          <kbd className="px-1 py-0.5 rounded bg-muted border border-border">D</kbd>{" "}
+          select MCQ
+        </div>
       </Card>
     </div>
   );

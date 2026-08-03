@@ -41,6 +41,7 @@ type RestoredTestProgress = {
   results?: TestResult[];
   currentResult?: {
     isCorrect: boolean;
+    score?: number;
     feedback: string;
   } | null;
   isAnswered?: boolean;
@@ -55,6 +56,7 @@ type TestRestoreSnapshot = {
   results: TestResult[];
   currentResult: {
     isCorrect: boolean;
+    score: number;
     feedback: string;
   } | null;
   isAnswered: boolean;
@@ -168,8 +170,27 @@ export default function Home() {
           )
         : 0;
     const normalizedResults = Array.isArray(pendingRestore.results)
-      ? pendingRestore.results
+      ? pendingRestore.results.map((r) => ({
+          ...r,
+          score:
+            typeof r.score === "number"
+              ? r.score
+              : r.isCorrect
+                ? 100
+                : 0,
+        }))
       : [];
+    const normalizedCurrentResult = pendingRestore.currentResult
+      ? {
+          ...pendingRestore.currentResult,
+          score:
+            typeof pendingRestore.currentResult.score === "number"
+              ? pendingRestore.currentResult.score
+              : pendingRestore.currentResult.isCorrect
+                ? 100
+                : 0,
+        }
+      : null;
 
     setDocumentInfo({
       text: pendingRestore.documentInfo.text,
@@ -192,7 +213,7 @@ export default function Home() {
           ? pendingRestore.userAnswer
           : "",
       results: normalizedResults,
-      currentResult: pendingRestore.currentResult ?? null,
+      currentResult: normalizedCurrentResult,
       isAnswered: Boolean(pendingRestore.isAnswered),
       timeLeft:
         typeof pendingRestore.timeLeft === "number" ||

@@ -27,6 +27,9 @@ export interface TheoryQuestion extends BaseQuestion {
 
 export type Question = MultipleChoiceQuestion | TrueFalseQuestion | FillInTheBlankQuestion | TheoryQuestion;
 
+// Minimum score (0-100) for an answer to count as "correct".
+export const PASS_THRESHOLD = 70;
+
 export interface TestSettings {
   questionType: QuestionType[];
   numberOfQuestions: number;
@@ -46,6 +49,7 @@ export interface TestResult {
   question: Question;
   userAnswer: string;
   isCorrect: boolean;
+  score: number; // 0-100, supports partial credit
   feedback: string;
 }
 
@@ -78,7 +82,7 @@ export interface StoredTestProgress {
   currentQuestionIndex?: number;
   userAnswer?: string;
   results?: unknown[];
-  currentResult?: { isCorrect: boolean; feedback: string } | null;
+  currentResult?: { isCorrect: boolean; score?: number; feedback: string } | null;
   isAnswered?: boolean;
   timeLeft?: number | null;
   questions?: unknown[];

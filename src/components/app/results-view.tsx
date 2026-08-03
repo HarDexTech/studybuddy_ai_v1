@@ -3,6 +3,7 @@
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 import type { TestResult } from "@/lib/types";
+import { PASS_THRESHOLD } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -84,10 +85,14 @@ export function ResultsView({
   totalQuestionsGenerated,
   onBack,
 }: ResultsViewProps) {
-  const correctAnswers = results.filter((r) => r.isCorrect).length;
-  const totalQuestions = requestedQuestionCount ?? results.length;
+  const passedCount = results.filter((r) => r.isCorrect).length;
+  const totalQuestions = totalQuestionsGenerated || results.length;
+  const totalScore = results.reduce(
+    (sum, r) => sum + (typeof r.score === "number" ? r.score : r.isCorrect ? 100 : 0),
+    0,
+  );
   const scorePercentage =
-    totalQuestions > 0 ? (correctAnswers / totalQuestions) * 100 : 0;
+    totalQuestions > 0 ? totalScore / totalQuestions : 0;
 
   // Only show partial completion if questions weren't fully generated
   // NOT if user just quit early
@@ -105,7 +110,7 @@ export function ResultsView({
     // Include partial completion info in PDF only if actually partial
     if (isPartialCompletion) {
       doc.text(
-        `Score: ${Math.round(scorePercentage)}% (${correctAnswers}/${totalQuestions} correct)`,
+        `Score: ${Math.round(scorePercentage)}% average (${passedCount}/${totalQuestions} passed)`,
         15,
         30,
       );
@@ -116,20 +121,22 @@ export function ResultsView({
       );
     } else {
       doc.text(
-        `Score: ${Math.round(scorePercentage)}% (${correctAnswers}/${totalQuestions} correct)`,
+        `Score: ${Math.round(scorePercentage)}% average (${passedCount}/${totalQuestions} passed)`,
         15,
         30,
       );
     }
 
-    const tableColumn = ["#", "Question", "Your Answer", "Result", "Feedback"];
+    const tableColumn = ["#", "Question", "Your Answer", "Score", "Result", "Feedback"];
     const tableRows: (string | number)[][] = [];
 
     results.forEach((result, index) => {
+      const score = typeof result.score === "number" ? result.score : result.isCorrect ? 100 : 0;
       const row = [
         index + 1,
         result.question.question,
         result.userAnswer || "Skipped",
+        `${score}%`,
         result.isCorrect ? "Correct" : "Incorrect",
         result.feedback,
       ];
@@ -146,8 +153,9 @@ export function ResultsView({
         0: { cellWidth: 10 },
         1: { cellWidth: "auto" },
         2: { cellWidth: "auto" },
-        3: { cellWidth: 20 },
-        4: { cellWidth: "auto" },
+        3: { cellWidth: 18 },
+        4: { cellWidth: 20 },
+        5: { cellWidth: "auto" },
       },
     });
 
@@ -174,7 +182,10 @@ export function ResultsView({
             </div>
             <div className="text-center md:text-left">
               <p className="text-3xl text-muted-foreground font-semibold">
-                {correctAnswers} / {totalQuestions} Correct
+                {passedCount} / {totalQuestions} passed (≥{PASS_THRESHOLD}%)
+              </p>
+              <p className="text-sm text-muted-foreground mt-1">
+                Average score across all questions
               </p>
             </div>
           </div>
@@ -211,9 +222,26 @@ export function ResultsView({
                       <span className="flex-1 text-left">
                         Question {index + 1}: {result.question.question}
                       </span>
+                      <span
+                        className={`text-sm font-semibold flex-shrink-0 ${
+                          result.isCorrect ? "text-green-500" : "text-destructive"
+                        }`}
+                      >
+                        {typeof result.score === "number" ? result.score : result.isCorrect ? 100 : 0}%
+                      </span>
                     </div>
                   </AccordionTrigger>
                   <AccordionContent className="space-y-3 pl-8">
+                    <p>
+                      <strong>Score:</strong>{" "}
+                      <span
+                        className={`font-semibold ${
+                          result.isCorrect ? "text-green-500" : "text-destructive"
+                        }`}
+                      >
+                        {typeof result.score === "number" ? result.score : result.isCorrect ? 100 : 0}%
+                      </span>
+                    </p>
                     <p>
                       <strong>Your Answer:</strong>{" "}
                       <span className="font-mono p-1 bg-muted rounded text-sm">
