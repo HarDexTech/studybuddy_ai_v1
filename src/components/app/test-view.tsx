@@ -61,8 +61,7 @@ import {
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { clearTestProgress, saveTestProgress } from "@/lib/storage";
-import { pickRandomDocumentChunk } from "@/lib/utils";
-import { retrieveTestContext } from "@/ai/rag";
+import { createChunkRotator } from "@/lib/utils";
 
 type TestViewProps = {
   initialQuestions: Question[];
@@ -299,7 +298,7 @@ export function TestView({
 
   const backgroundGenerationStarted = useRef(false);
   const generationErrorToastId = useRef<string | null>(null);
-  const ragContext = useRef<string>("");
+  const chunkRotator = useRef<(() => string) | null>(null);
   const instantFirstDone = useRef(false);
   const lastSyncedQuestion = useRef<string | null>(null);
   const draftsRef = useRef<Record<string, string>>({});
@@ -517,15 +516,10 @@ export function TestView({
       }
       backgroundGenerationStarted.current = true;
 
-      // Retrieve relevant document chunks via RAG before generation loop
-      try {
-        ragContext.current = await retrieveTestContext(
-          `Generate ${settings.difficulty} ${settings.questionType.join(", ")} questions about ${settings.topicFocus || "the document's main topics"}`,
-          { limit: 8 },
-        );
-      } catch (err) {
-        console.warn("RAG retrieval failed, falling back to random chunk:", err);
-      }
+      chunkRotator.current ??= createChunkRotator(
+        effectiveDocumentText,
+        Math.max(8, Math.min(totalQuestionsToGenerate, 24)),
+      );
 
       let currentGeneratedQuestions = [...questions];
       let retryCount = 0;
@@ -564,7 +558,7 @@ export function TestView({
           );
 
           const generationPromise = generateBatchTestQuestions({
-            documentContent: ragContext.current || pickRandomDocumentChunk(effectiveDocumentText),
+            documentContent: chunkRotator.current(),
             questionTypes: settings.questionType,
             difficulty: settings.difficulty,
             questionSource: settings.questionSource,

@@ -74,7 +74,12 @@ If the document appears to be a past-question or question-only material where ex
 For multiple-choice and true-or-false questions, always provide a best-answer decision.
 
 CRITICAL: You MUST NOT generate questions that are already present in the "Existing Questions" list below. Generate NEW, UNIQUE questions only.
-Be concise — keep question stems and answer choices short.`;
+Be concise — keep question stems and answer choices short.
+
+**GROUNDING RULES:**
+- Only generate questions whose answers are present in or directly derivable from the Document Content below. Do NOT include questions that rely on outside knowledge or that the document cannot answer.
+- Spread the questions across DIFFERENT topics and sections of the content rather than repeatedly targeting the same passage.
+- If the document is a past-question or question-only sheet without explicit answers, base every question on the topics the document covers and ensure each answer can be reasoned from the document (or the question itself).`;
 
   if (input.priorityTopics && input.priorityTopics.length > 0) {
     prompt += `\n\nPRIORITY TOPICS — Bias approximately 60% of questions toward these topics:

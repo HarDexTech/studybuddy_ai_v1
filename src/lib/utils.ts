@@ -73,3 +73,22 @@ export function pickRandomDocumentChunk(text: string, chunkCount = 7): string {
   const index = Math.floor(Math.random() * chunks.length);
   return chunks[index];
 }
+
+/**
+ * Returns a round-robin picker that walks through evenly-sized chunks of the
+ * document so question generation covers the whole document instead of
+ * repeatedly sampling the same section.
+ */
+export function createChunkRotator(
+  text: string,
+  chunkCount: number,
+): () => string {
+  const chunks = chunkDocument(text, chunkCount);
+  let index = 0;
+  return () => {
+    if (chunks.length === 0) return text;
+    const chunk = chunks[index % chunks.length];
+    index += 1;
+    return chunk;
+  };
+}
