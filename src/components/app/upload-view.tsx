@@ -95,6 +95,59 @@ type PreloadStatus =
   | "cache-hit"
   | "error";
 
+// ---------------------------------------------------------------------------
+// Recent documents — sessionStorage cache.
+// The upload view fetches the user's documents in two places (the recent-docs
+// panel and the cross-document picker). Cache the first fetch for ~30s in
+// sessionStorage so the second read is instant instead of another DB call.
+// Invalidated whenever documents are added/removed/cleared.
+// ---------------------------------------------------------------------------
+
+const RECENT_DOCS_CACHE_KEY = "sb:recent-docs";
+const RECENT_DOCS_CACHE_TTL_MS = 30_000;
+
+interface RecentDocsCacheEntry {
+  docs: CachedDocument[];
+  fetchedAt: number;
+}
+
+function invalidateRecentDocsCache(): void {
+  try {
+    sessionStorage.removeItem(RECENT_DOCS_CACHE_KEY);
+  } catch {
+    // sessionStorage unavailable — cache simply won't be used
+  }
+}
+
+async function fetchRecentDocumentsCached(): Promise<CachedDocument[]> {
+  try {
+    const raw = sessionStorage.getItem(RECENT_DOCS_CACHE_KEY);
+    if (raw) {
+      const entry = JSON.parse(raw) as RecentDocsCacheEntry;
+      if (
+        entry &&
+        Array.isArray(entry.docs) &&
+        Date.now() - entry.fetchedAt < RECENT_DOCS_CACHE_TTL_MS
+      ) {
+        return entry.docs;
+      }
+    }
+  } catch {
+    // corrupted entry — fall through and refetch
+  }
+
+  const docs = await getRecentDocuments();
+  try {
+    sessionStorage.setItem(
+      RECENT_DOCS_CACHE_KEY,
+      JSON.stringify({ docs, fetchedAt: Date.now() } satisfies RecentDocsCacheEntry),
+    );
+  } catch {
+    // sessionStorage unavailable — skip caching
+  }
+  return docs;
+}
+
 type PreloadEntry = {
   key: string;
   createdAt: number;
@@ -189,7 +242,7 @@ function RecentDocuments({
   const [showAll, setShowAll] = useState(false);
 
   const updateDocs = async () => {
-    const docs = await getRecentDocuments();
+    const docs = await fetchRecentDocumentsCached();
     setRecentDocs(docs);
   };
 
@@ -245,6 +298,7 @@ function RecentDocuments({
               <AlertDialogAction
                 onClick={async () => {
                   await clearAllRecentDocuments();
+                  invalidateRecentDocsCache();
                   setShowAll(false);
                   await updateDocs();
                 }}
@@ -270,6 +324,7 @@ function RecentDocuments({
               onClick={async (event) => {
                 event.stopPropagation();
                 await removeRecentDocument(doc.id);
+                invalidateRecentDocsCache();
                 await updateDocs();
               }}
             >
@@ -593,7 +648,7 @@ export function UploadView({
     if (!isTestCreationMode) return;
     let cancelled = false;
     (async () => {
-      const docs = await getRecentDocuments();
+      const docs = await fetchRecentDocumentsCached();
       const pqSets = await getPastQuestionSets();
       if (cancelled) return;
       setRecentDocs(
@@ -1033,6 +1088,7 @@ export function UploadView({
         text: text,
         structuredText,
       }).catch((err) => console.error("Failed to persist recent document:", err));
+      invalidateRecentDocsCache();
 
       onDocumentUploaded(text, fileInfo, structuredText);
     } catch (error) {
@@ -1095,6 +1151,7 @@ export function UploadView({
       lastModified: now,
       text: trimmedText,
     }).catch((err) => console.error("Failed to persist recent document:", err));
+    invalidateRecentDocsCache();
 
     onDocumentUploaded(trimmedText, {
       name: pastedDocumentName,
