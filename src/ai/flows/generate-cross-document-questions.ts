@@ -44,7 +44,7 @@ const SingleQuestionSchema = z.object({
   question: z.string().describe('The question text.'),
   choices: z.array(z.string()).optional().describe('The possible answers for multiple choice.'),
   correctAnswer: z.union([z.string(), z.boolean()]).optional().describe('The correct answer.'),
-  sourceDoc: z.string().optional().describe('Which document(s) this question references.'),
+  sourceDoc: z.string().optional().describe('The document(s) this question is based on.'),
 });
 
 const GenerateCrossDocumentQuestionsOutputSchema = z.object({
@@ -52,7 +52,7 @@ const GenerateCrossDocumentQuestionsOutputSchema = z.object({
 });
 export type GenerateCrossDocumentQuestionsOutput = z.infer<typeof GenerateCrossDocumentQuestionsOutputSchema>;
 
-const SYSTEM = 'You are an expert test generator that creates cross-document questions requiring synthesis of multiple sources.';
+const SYSTEM = 'You are an expert test generator that creates questions from multiple uploaded documents, with each question based on a single source document.';
 
 const USER_PROMPT = (input: GenerateCrossDocumentQuestionsInput) => {
   const isStrict = input.questionSource === 'strict';
@@ -63,16 +63,24 @@ const USER_PROMPT = (input: GenerateCrossDocumentQuestionsInput) => {
     .map((d, i) => `DOCUMENT ${i + 1}: "${d.name}"\n\`\`\`\n${d.content}\n\`\`\``)
     .join('\n\n');
 
-  let prompt = `Create ${input.numberOfQuestions} test questions that span the following documents. Each question must require knowledge from MULTIPLE documents to answer.
+  let prompt = `Create ${input.numberOfQuestions} test questions from the documents below. Mix TWO kinds of questions:
+- SINGLE-DOCUMENT questions — about 2/3 of the total. Each one is answerable from ONE document alone, spread evenly across the documents so every document contributes roughly the same number. Do NOT combine knowledge from another document in these.
+- COMBINED questions — about 1/3 of the total. These may synthesize or compare knowledge from MULTIPLE documents in a single question.
 
 Documents:
 ${documentsText}
+
+GROUNDING RULES:
+- A single-document question's answer must be present in or directly derivable from its source document.
+- A combined question's answer must be answerable using only the provided documents — never outside knowledge.
+- Spread questions across DIFFERENT topics and sections of the relevant documents.
+- Never mention "DOCUMENT 1", "DOCUMENT 2", the file name, or any document label inside the question text. Present only the subject content so each question reads naturally on its own.
 
 ${isMultiType ? `Question types: ${selectedTypesText}` : `All questions must be '${selectedType}' type.`}
 Difficulty: ${input.difficulty}
 ${isStrict ? 'Questions must be strictly from the texts.' : 'Questions can be formed from the content.'}
 
-For each question, set 'sourceDoc' to the document name(s) referenced.`;
+For each question, set 'sourceDoc' to the name(s) of the document(s) the question is based on.`;
 
   if (input.priorityTopics && input.priorityTopics.length > 0) {
     prompt += `\n\nPRIORITY TOPICS — Bias approximately 60% of questions toward these topics:
