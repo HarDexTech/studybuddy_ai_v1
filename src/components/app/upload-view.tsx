@@ -96,22 +96,22 @@ type PreloadStatus =
   | "error";
 
 // ---------------------------------------------------------------------------
-// Recent documents — sessionStorage cache.
+// Recent documents — sessionStorage cache + in-flight deduplication.
 // The upload view fetches the user's documents in two places (the recent-docs
 // panel and the cross-document picker). Cache the first fetch for ~30s in
-// sessionStorage so the second read is instant instead of another DB call.
-// Invalidated whenever documents are added/removed/cleared.
+// sessionStorage so the second read is instant.  Also track the in-flight
+// Promise so simultaneous callers share the same DB round-trip.
 // ---------------------------------------------------------------------------
 
 const RECENT_DOCS_CACHE_KEY = "sb:recent-docs";
 const RECENT_DOCS_CACHE_TTL_MS = 30_000;
 
-interface RecentDocsCacheEntry {
-  docs: CachedDocument[];
-  fetchedAt: number;
-}
+let recentDocsFetchPromise: Promise<CachedDocument[]> | null = null;
+let recentDocsFetchGeneration = 0;               // bumped on invalidation
 
 function invalidateRecentDocsCache(): void {
+  recentDocsFetchPromise = null;
+  recentDocsFetchGeneration++;
   try {
     sessionStorage.removeItem(RECENT_DOCS_CACHE_KEY);
   } catch {
@@ -120,12 +120,15 @@ function invalidateRecentDocsCache(): void {
 }
 
 async function fetchRecentDocumentsCached(): Promise<CachedDocument[]> {
+  const gen = recentDocsFetchGeneration;
+
+  // 1. sessionStorage hit (must match current generation)
   try {
     const raw = sessionStorage.getItem(RECENT_DOCS_CACHE_KEY);
     if (raw) {
-      const entry = JSON.parse(raw) as RecentDocsCacheEntry;
+      const entry = JSON.parse(raw) as { docs: CachedDocument[]; fetchedAt: number; gen: number };
       if (
-        entry &&
+        entry.gen === gen &&
         Array.isArray(entry.docs) &&
         Date.now() - entry.fetchedAt < RECENT_DOCS_CACHE_TTL_MS
       ) {
@@ -133,19 +136,34 @@ async function fetchRecentDocumentsCached(): Promise<CachedDocument[]> {
       }
     }
   } catch {
-    // corrupted entry — fall through and refetch
+    // corrupted entry — fall through
   }
 
-  const docs = await getRecentDocuments();
+  // 2. share in-flight fetch
+  if (recentDocsFetchPromise) return recentDocsFetchPromise;
+
+  // 3. start fresh fetch, only store if generation hasn't been bumped mid-flight
+  recentDocsFetchPromise = getRecentDocuments().then((docs) => {
+    if (gen === recentDocsFetchGeneration) {
+      try {
+        sessionStorage.setItem(
+          RECENT_DOCS_CACHE_KEY,
+          JSON.stringify({ docs, fetchedAt: Date.now(), gen }),
+        );
+      } catch {
+        // sessionStorage unavailable — skip write
+      }
+    }
+    return docs;
+  });
+
   try {
-    sessionStorage.setItem(
-      RECENT_DOCS_CACHE_KEY,
-      JSON.stringify({ docs, fetchedAt: Date.now() } satisfies RecentDocsCacheEntry),
-    );
-  } catch {
-    // sessionStorage unavailable — skip caching
+    return await recentDocsFetchPromise;
+  } finally {
+    if (gen === recentDocsFetchGeneration) {
+      recentDocsFetchPromise = null;
+    }
   }
-  return docs;
 }
 
 type PreloadEntry = {
