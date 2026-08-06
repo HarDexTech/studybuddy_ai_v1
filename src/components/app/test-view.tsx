@@ -61,7 +61,7 @@ import {
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { clearTestProgress, saveTestProgress } from "@/lib/storage";
-import { createChunkRotator } from "@/lib/utils";
+import { createChunkRotator, gradeFillInTheBlank } from "@/lib/utils";
 
 type TestViewProps = {
   initialQuestions: Question[];
@@ -779,7 +779,15 @@ export function TestView({
           score: isCorrect ? 100 : 0,
           feedback,
         };
-      } else {
+      } else if (currentQuestion.type === "fill-in-the-blank") {
+        const correctAnswer =
+          "correctAnswer" in currentQuestion
+            ? String(currentQuestion.correctAnswer)
+            : "";
+        validationResult = gradeFillInTheBlank(userAnswer, correctAnswer);
+      }
+
+      if (!validationResult) {
         let attempt = 0;
         let lastError: unknown = null;
 

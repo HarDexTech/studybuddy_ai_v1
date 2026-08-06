@@ -1,5 +1,6 @@
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
+import { PASS_THRESHOLD } from './types';
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -90,5 +91,89 @@ export function createChunkRotator(
     const chunk = chunks[index % chunks.length];
     index += 1;
     return chunk;
+  };
+}
+
+function normalizeAnswerText(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function bigramSimilarity(a: string, b: string): number {
+  if (a === b) return 1;
+  if (a.length < 2 || b.length < 2) return 0;
+  const getBigrams = (s: string) => {
+    const set = new Set<string>();
+    for (let i = 0; i < s.length - 1; i++) set.add(s.slice(i, i + 2));
+    return set;
+  };
+  const ab = getBigrams(a);
+  const bb = getBigrams(b);
+  let overlap = 0;
+  for (const bg of ab) {
+    if (bb.has(bg)) overlap++;
+  }
+  return (2 * overlap) / (ab.size + bb.size);
+}
+
+function tokenJaccardSimilarity(a: string, b: string): number {
+  const at = new Set(a.split(" ").filter(Boolean));
+  const bt = new Set(b.split(" ").filter(Boolean));
+  if (at.size === 0 || bt.size === 0) return 0;
+  let intersection = 0;
+  for (const t of at) {
+    if (bt.has(t)) intersection++;
+  }
+  return intersection / (at.size + bt.size - intersection);
+}
+
+/**
+ * Deterministic grading for fill-in-the-blank answers — no model call.
+ * Returns null when the answer cannot be graded locally (no correct answer
+ * recorded, or a long sentence-shaped answer that needs semantic grading).
+ */
+export function gradeFillInTheBlank(
+  userAnswer: string,
+  correctAnswer: string,
+): { isCorrect: boolean; score: number; feedback: string } | null {
+  const expected = normalizeAnswerText(correctAnswer);
+  const given = normalizeAnswerText(userAnswer);
+  if (!expected || !given) {
+    return null;
+  }
+
+  if (
+    given === expected ||
+    given.includes(expected) ||
+    expected.includes(given)
+  ) {
+    return { isCorrect: true, score: 100, feedback: "Correct!" };
+  }
+
+  const expectedTokens = expected.split(" ").filter(Boolean);
+  const givenTokens = given.split(" ").filter(Boolean);
+  if (expectedTokens.every((t) => givenTokens.includes(t))) {
+    return { isCorrect: true, score: 100, feedback: "Correct!" };
+  }
+
+  if (givenTokens.length > 3 && given.length > expected.length * 1.5) {
+    return null;
+  }
+
+  const similarity = Math.max(
+    bigramSimilarity(given, expected),
+    tokenJaccardSimilarity(given, expected),
+  );
+  const score = Math.round(similarity * 100);
+  return {
+    isCorrect: score >= PASS_THRESHOLD,
+    score,
+    feedback:
+      score >= PASS_THRESHOLD
+        ? `Close! The expected answer is: ${correctAnswer}`
+        : `Incorrect. The expected answer is: ${correctAnswer}`,
   };
 }
