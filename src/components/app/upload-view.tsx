@@ -1654,7 +1654,7 @@ export function UploadView({
                     setCrossDocEnabled(checked);
                     if (!checked) setSelectedDocIds([]);
                   }}
-                  disabled={isLoading || recentDocs.length === 0}
+                  disabled={isLoading}
                 />
                 <Label
                   htmlFor="cross-doc-enabled"
