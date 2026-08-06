@@ -3,7 +3,7 @@
  * @fileOverview Answer a question about the document content.
  */
 
-import { callNimJson } from "@/ai/api";
+import { callJson } from "@/ai/provider";
 import { RateLimitPresets, enforceRateLimit } from "@/lib/rate-limit";
 import { z } from "zod";
 
@@ -47,7 +47,7 @@ export async function answerDocumentQuestion(
   input: AnswerDocumentQuestionInput,
 ): Promise<AnswerDocumentQuestionOutput> {
   await enforceRateLimit(RateLimitPresets.qna);
-  return callNimJson(SYSTEM, USER_PROMPT(input), (raw) => {
+  return callJson(SYSTEM, USER_PROMPT(input), (raw) => {
     let parsed: unknown;
     try {
       parsed = JSON.parse(raw);

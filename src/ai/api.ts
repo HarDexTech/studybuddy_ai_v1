@@ -1,4 +1,4 @@
-import { isRateLimitError, withRetry } from "./genkit";
+import { isRateLimitError, withRetry } from "./retry";
 
 // ---------------------------------------------------------------------------
 // DeepSeek client — OpenAI-compatible API via fetch

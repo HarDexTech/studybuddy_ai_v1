@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@clerk/nextjs": "^6.39.6",
+    "@genkit-ai/google-genai": "1.25.0",
     "@genkit-ai/next": "1.25.0",
     "@google/genai": "^2.13.0",
     "@hookform/resolvers": "^4.1.3",

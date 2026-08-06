@@ -1,6 +1,13 @@
 import { NextRequest } from "next/server";
 import { MODEL_PRIORITY, deepseekChatStreamChunks } from "@/ai/api";
-import { withRetry } from "@/ai/genkit";
+import { callGeminiJson } from "@/ai/gemini/engine";
+import {
+  getPrimaryProvider,
+  otherProvider,
+  shouldFallbackToOtherProvider,
+  type AiProvider,
+} from "@/ai/provider";
+import { withRetry } from "@/ai/retry";
 import {
   GenerateDocumentSummaryInputSchema,
   SUMMARY_SYSTEM,
@@ -77,36 +84,66 @@ export async function POST(request: NextRequest) {
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       try {
-        const model = MODEL_PRIORITY[0];
-        const raw = await withRetry(async () => {
-          let buf = "";
-          for await (const delta of deepseekChatStreamChunks(
-            model,
-            SUMMARY_SYSTEM,
-            SUMMARY_USER_PROMPT(truncated, priorityTopics),
-            {
-              maxOutputTokens: SUMMARY_MAX_OUTPUT_TOKENS,
-              thinkingDisabled: true,
-            },
-          )) {
-            if (delta.content) buf += delta.content;
-          }
-          if (!buf.trim()) {
-            throw new Error(
-              "AI_TEMP_UNAVAILABLE: DeepSeek returned empty response.",
+        const primary = getPrimaryProvider();
+        const providers: AiProvider[] = [primary, otherProvider(primary)];
+
+        for (let index = 0; index < providers.length; index++) {
+          const providerName = providers[index];
+          const isLast = index === providers.length - 1;
+
+          try {
+            let raw: string;
+
+            if (providerName === "gemini") {
+              raw = await callGeminiJson(
+                SUMMARY_SYSTEM,
+                SUMMARY_USER_PROMPT(truncated, priorityTopics),
+                (text) => text,
+                {
+                  maxOutputTokens: SUMMARY_MAX_OUTPUT_TOKENS,
+                },
+              );
+            } else {
+              const model = MODEL_PRIORITY[0];
+              raw = await withRetry(async () => {
+                let buf = "";
+                for await (const delta of deepseekChatStreamChunks(
+                  model,
+                  SUMMARY_SYSTEM,
+                  SUMMARY_USER_PROMPT(truncated, priorityTopics),
+                  {
+                    maxOutputTokens: SUMMARY_MAX_OUTPUT_TOKENS,
+                    thinkingDisabled: true,
+                  },
+                )) {
+                  if (delta.content) buf += delta.content;
+                }
+                if (!buf.trim()) {
+                  throw new Error(
+                    "AI_TEMP_UNAVAILABLE: DeepSeek returned empty response.",
+                  );
+                }
+                return buf;
+              });
+            }
+
+            const cleaned = normalizeHeadings(raw);
+            checkHeadingHealth(cleaned);
+            saveSummary(sig, cleaned).catch((err) =>
+              console.error("Failed to cache summary:", err),
             );
+
+            controller.enqueue(encoder.encode(cleaned));
+            controller.close();
+            return;
+          } catch (error) {
+            const fallbackEligible = !isLast && shouldFallbackToOtherProvider(error);
+            console.warn(
+              `[provider] ${providerName} summary failed${fallbackEligible ? ", falling back" : ""}: ${error instanceof Error ? error.message.slice(0, 200) : error}`,
+            );
+            if (isLast || !fallbackEligible) throw error;
           }
-          return buf;
-        });
-
-        const cleaned = normalizeHeadings(raw);
-        checkHeadingHealth(cleaned);
-        saveSummary(sig, cleaned).catch((err) =>
-          console.error("Failed to cache summary:", err),
-        );
-
-        controller.enqueue(encoder.encode(cleaned));
-        controller.close();
+        }
       } catch (error) {
         console.error("[generate-summary] streaming failed:", error);
         controller.error(error);

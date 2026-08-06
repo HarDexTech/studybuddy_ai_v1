@@ -4,7 +4,7 @@
  * frequently tested topics and extract verbatim-reusable questions.
  */
 
-import { callNimJson } from '@/ai/api';
+import { callJson } from '@/ai/provider';
 import { RateLimitPresets, enforceRateLimit } from '@/lib/rate-limit';
 import { z } from 'zod';
 
@@ -66,7 +66,7 @@ export async function analyzePastQuestionTopics(
   input: AnalyzePastQuestionTopicsInput,
 ): Promise<AnalyzePastQuestionTopicsOutput> {
   await enforceRateLimit(RateLimitPresets.topicAnalysis);
-  return callNimJson(SYSTEM, USER_PROMPT(input), (raw) => {
+  return callJson(SYSTEM, USER_PROMPT(input), (raw) => {
     let parsed: unknown;
     try {
       parsed = JSON.parse(raw);

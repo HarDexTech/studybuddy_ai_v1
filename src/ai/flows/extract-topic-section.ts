@@ -3,7 +3,7 @@
  * @fileOverview Extract a chapter/topic-focused section from a document.
  */
 
-import { callNimJson } from '@/ai/api';
+import { callJson } from '@/ai/provider';
 import { RateLimitPresets, enforceRateLimit } from '@/lib/rate-limit';
 import { z } from 'zod';
 
@@ -43,7 +43,7 @@ Return ONLY valid JSON in this exact format with no markdown:
 
 export async function extractTopicSection(input: ExtractTopicSectionInput): Promise<ExtractTopicSectionOutput> {
   await enforceRateLimit(RateLimitPresets.extract);
-  return callNimJson(SYSTEM, USER_PROMPT(input), (raw) => {
+  return callJson(SYSTEM, USER_PROMPT(input), (raw) => {
     let parsed: unknown;
     try {
       parsed = JSON.parse(raw);

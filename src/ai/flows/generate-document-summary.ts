@@ -6,7 +6,7 @@
  * storage.ts; the interactive UI streams from /api/generate-summary instead.
  */
 
-import { callNimJsonStream } from '@/ai/api';
+import { callJsonStream } from '@/ai/provider';
 import { RateLimitPresets, enforceRateLimit } from '@/lib/rate-limit';
 import { getCachedSummary, saveSummary } from '@/lib/storage';
 import {
@@ -30,7 +30,7 @@ export async function generateDocumentSummary(input: GenerateDocumentSummaryInpu
 
   const truncated = truncateDocuments(input.documents);
 
-  const raw = await callNimJsonStream(SUMMARY_SYSTEM, SUMMARY_USER_PROMPT(truncated, input.priorityTopics), {
+  const raw = await callJsonStream(SUMMARY_SYSTEM, SUMMARY_USER_PROMPT(truncated, input.priorityTopics), {
     maxOutputTokens: 12000,
     skipStripFences: true,
     thinkingDisabled: true,

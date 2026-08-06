@@ -6,7 +6,7 @@
  * Any failure falls back to the raw input text.
  */
 
-import { callNimJsonStream } from '@/ai/api';
+import { callJsonStream } from '@/ai/provider';
 
 const SYSTEM =
   'You are a document structuring assistant. Your only job is to add markdown structure to the provided text.';
@@ -78,7 +78,7 @@ function maxOutputTokensFor(chunkLength: number): number {
 }
 
 async function structureChunk(text: string): Promise<string> {
-  return await callNimJsonStream(SYSTEM, USER_PROMPT(text), {
+  return await callJsonStream(SYSTEM, USER_PROMPT(text), {
     maxOutputTokens: maxOutputTokensFor(text.length),
     skipStripFences: true,
     thinkingDisabled: true,

@@ -3,7 +3,7 @@
  * @fileOverview Generate test questions that span multiple uploaded documents.
  */
 
-import { callNimJson } from '@/ai/api';
+import { callJson } from '@/ai/provider';
 import { RateLimitPresets, enforceRateLimit } from '@/lib/rate-limit';
 import { shuffleMultipleChoiceChoices } from '@/lib/utils';
 import { z } from 'zod';
@@ -128,7 +128,7 @@ export async function generateCrossDocumentQuestions(
   input: GenerateCrossDocumentQuestionsInput,
 ): Promise<GenerateCrossDocumentQuestionsOutput> {
   await enforceRateLimit(RateLimitPresets.crossDoc);
-  return callNimJson(SYSTEM, USER_PROMPT(input), (raw) => {
+  return callJson(SYSTEM, USER_PROMPT(input), (raw) => {
     let parsed: unknown;
     try {
       parsed = JSON.parse(raw);

@@ -3,7 +3,7 @@
  * @fileOverview Explain why an answer to a question is correct.
  */
 
-import { callNimJson } from "@/ai/api";
+import { callJson } from "@/ai/provider";
 import { RateLimitPresets, enforceRateLimit } from "@/lib/rate-limit";
 import { z } from "zod";
 
@@ -53,7 +53,7 @@ export async function explainQuestion(
   input: ExplainQuestionInput,
 ): Promise<ExplainQuestionOutput> {
   await enforceRateLimit(RateLimitPresets.explain);
-  return callNimJson(SYSTEM, USER_PROMPT(input), (raw) => {
+  return callJson(SYSTEM, USER_PROMPT(input), (raw) => {
     let parsed: unknown;
     try {
       parsed = JSON.parse(raw);

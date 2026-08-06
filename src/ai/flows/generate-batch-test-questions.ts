@@ -3,7 +3,7 @@
  * @fileOverview Generate multiple test questions in a single API call — streaming for lower latency.
  */
 
-import { callNimJsonStream } from '@/ai/api';
+import { callJsonStream } from '@/ai/provider';
 import { RateLimitPresets, enforceRateLimit } from '@/lib/rate-limit';
 import { shuffleMultipleChoiceChoices } from '@/lib/utils';
 import { z } from 'zod';
@@ -138,7 +138,7 @@ const normalizeBatch = (raw: { questions?: unknown }): GenerateBatchTestQuestion
 export async function generateBatchTestQuestions(input: GenerateBatchTestQuestionsInput): Promise<GenerateBatchTestQuestionsOutput> {
   await enforceRateLimit(RateLimitPresets.testGeneration);
   // Streaming for faster first-byte — batch generation can be slow when waiting for full response
-  const raw = await callNimJsonStream(SYSTEM, USER_PROMPT(input), {
+  const raw = await callJsonStream(SYSTEM, USER_PROMPT(input), {
     maxOutputTokens: input.batchSize * 1024,
   });
   let parsed: unknown;

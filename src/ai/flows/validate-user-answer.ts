@@ -3,7 +3,7 @@
  * @fileOverview Validate a user's answer to a question — streaming for low latency.
  */
 
-import { callNimJsonStream } from "@/ai/api";
+import { callJsonStream } from "@/ai/provider";
 import { RateLimitPresets, enforceRateLimit } from "@/lib/rate-limit";
 import { z } from "zod";
 import { PASS_THRESHOLD } from "@/lib/types";
@@ -76,7 +76,7 @@ export async function validateUserAnswer(
 ): Promise<ValidateUserAnswerOutput> {
   await enforceRateLimit(RateLimitPresets.answerValidation);
   // Streaming for faster first-byte — validation responses are small
-  const raw = await callNimJsonStream(SYSTEM, USER_PROMPT(input), {
+  const raw = await callJsonStream(SYSTEM, USER_PROMPT(input), {
     maxOutputTokens: 512,
   });
   let parsed: unknown;
