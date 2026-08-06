@@ -124,6 +124,7 @@ type UploadViewProps = {
     questions: Question[],
     settings: TestSettings,
     effectiveDocumentText: string,
+    crossDocDocuments?: { name: string; content: string }[],
   ) => void;
   existingDocument?: {
     text: string;
@@ -1191,7 +1192,7 @@ export function UploadView({
           throw new Error("Failed to generate cross-document questions.");
         }
 
-        onTestGenerated(result.questions as Question[], settings, effectiveDocumentText);
+        onTestGenerated(result.questions as Question[], settings, effectiveDocumentText, allDocs);
         return;
       }
 

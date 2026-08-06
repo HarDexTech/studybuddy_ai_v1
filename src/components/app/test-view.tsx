@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback } from "react";
 import { generateBatchTestQuestions } from "@/ai/flows/generate-batch-test-questions";
+import { generateCrossDocumentQuestions } from "@/ai/flows/generate-cross-document-questions";
 import {
   validateUserAnswer,
   type ValidateUserAnswerOutput,
@@ -68,6 +69,7 @@ type TestViewProps = {
   documentInfo: { text: string };
   effectiveDocumentText: string;
   settings: TestSettings;
+  crossDocDocuments?: { name: string; content: string }[];
   onTestFinished: (results: TestResult[], totalGenerated: number) => void;
   showRestoreNotice?: boolean;
   onBack: () => void;
@@ -237,6 +239,7 @@ export function TestView({
   documentInfo,
   effectiveDocumentText,
   settings,
+  crossDocDocuments,
   onTestFinished,
   showRestoreNotice = false,
   restoreSnapshot = null,
@@ -557,18 +560,34 @@ export function TestView({
             ),
           );
 
-          const generationPromise = generateBatchTestQuestions({
-            documentContent: chunkRotator.current(),
-            questionTypes: settings.questionType,
-            difficulty: settings.difficulty,
-            questionSource: settings.questionSource,
-            existingQuestions: currentGeneratedQuestions.map(
-              (q) => q.question,
-            ),
-            batchSize,
-            priorityTopics: settings.priorityTopics,
-            seedQuestions: settings.seedQuestions,
-          });
+          const isCrossDoc =
+            !!crossDocDocuments && crossDocDocuments.length >= 2;
+
+          const generationPromise = isCrossDoc
+            ? generateCrossDocumentQuestions({
+                documents: crossDocDocuments,
+                questionTypes: settings.questionType,
+                difficulty: settings.difficulty,
+                questionSource: settings.questionSource,
+                numberOfQuestions: batchSize,
+                existingQuestions: currentGeneratedQuestions.map(
+                  (q) => q.question,
+                ),
+                priorityTopics: settings.priorityTopics,
+                seedQuestions: settings.seedQuestions,
+              })
+            : generateBatchTestQuestions({
+                documentContent: chunkRotator.current(),
+                questionTypes: settings.questionType,
+                difficulty: settings.difficulty,
+                questionSource: settings.questionSource,
+                existingQuestions: currentGeneratedQuestions.map(
+                  (q) => q.question,
+                ),
+                batchSize,
+                priorityTopics: settings.priorityTopics,
+                seedQuestions: settings.seedQuestions,
+              });
 
           const result = (await Promise.race([
             generationPromise.then((r) => ({
@@ -802,7 +821,12 @@ export function TestView({
 
             validationResult = await Promise.race([
               validateUserAnswer({
-                documentContent: documentInfo.text,
+                documentContent:
+                  crossDocDocuments && crossDocDocuments.length >= 2
+                    ? crossDocDocuments
+                        .map((d) => d.content)
+                        .join("\n\n")
+                    : documentInfo.text,
                 question: currentQuestion.question,
                 userAnswer: userAnswer,
                 correctAnswer:

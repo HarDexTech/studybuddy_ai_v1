@@ -104,6 +104,9 @@ export default function Home() {
     "studying",
   );
   const [testCreationMode, setTestCreationMode] = useState(false);
+  const [crossDocDocuments, setCrossDocDocuments] = useState<
+    { name: string; content: string }[] | null
+  >(null);
   const [preloadActivationId, setPreloadActivationId] = useState(0);
   const [sharedPreload, setSharedPreload] = useState<{
     entry: SharedPreloadEntry | null;
@@ -270,6 +273,7 @@ export default function Home() {
       structuredText: docStructuredText,
     });
     setEffectiveDocumentText(docText);
+    setCrossDocDocuments(null);
     setRestoreSnapshot(null);
     setShowRestoredSessionNotice(false);
     setTestCreationMode(false);
@@ -297,10 +301,12 @@ export default function Home() {
     generatedQuestions: Question[],
     settings: TestSettings,
     nextEffectiveDocumentText: string,
+    docs?: { name: string; content: string }[],
   ) => {
     setInitialQuestions(generatedQuestions);
     setTestSettings(settings);
     setEffectiveDocumentText(nextEffectiveDocumentText);
+    setCrossDocDocuments(docs ?? null);
     setRestoreSnapshot(null);
     setShowRestoredSessionNotice(false);
     setSharedPreload({ entry: null, status: "idle" });
@@ -328,6 +334,7 @@ export default function Home() {
     setRestoreSnapshot(null);
     setShowRestoredSessionNotice(false);
     setTestCreationMode(false);
+    setCrossDocDocuments(null);
     setSharedPreload({ entry: null, status: "idle" });
   };
 
@@ -387,6 +394,7 @@ export default function Home() {
               documentInfo={documentInfo}
               effectiveDocumentText={effectiveDocumentText || documentInfo.text}
               settings={testSettings}
+              crossDocDocuments={crossDocDocuments ?? undefined}
               onTestFinished={handleTestFinished}
               showRestoreNotice={showRestoredSessionNotice}
               restoreSnapshot={restoreSnapshot}
