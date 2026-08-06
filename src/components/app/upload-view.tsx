@@ -69,7 +69,7 @@ import type {
   QuestionType,
   TestSettings,
 } from "@/lib/types";
-import { cn, pickRandomDocumentChunk } from "@/lib/utils";
+import { cn, createChunkRotator, pickRandomDocumentChunk } from "@/lib/utils";
 import {
   AlertTriangle,
   Brain,
@@ -87,6 +87,33 @@ import {
   ChevronLeft,
 } from "lucide-react";
 
+type PreloadStatus =
+  | "idle"
+  | "scheduled"
+  | "preloading"
+  | "ready"
+  | "cache-hit"
+  | "error";
+
+type PreloadEntry = {
+  key: string;
+  createdAt: number;
+  questions: Question[];
+  effectiveDocumentText: string;
+};
+
+const uniqueQuestions = (questions: Question[]): Question[] => {
+  const seen = new Set<string>();
+  return questions.filter((question) => {
+    const normalized = question.question.trim().toLowerCase().replace(/\s+/g, " ");
+    if (!normalized || seen.has(normalized)) {
+      return false;
+    }
+    seen.add(normalized);
+    return true;
+  });
+};
+
 type UploadViewProps = {
   onDocumentUploaded: (
     text: string,
@@ -103,6 +130,13 @@ type UploadViewProps = {
     file: { name: string; type: string; size: number };
   } | null;
   onBack?: () => void;
+  preloadActivationId?: number;
+  sharedPreload?: PreloadEntry | null;
+  sharedPreloadStatus?: PreloadStatus;
+  onSharedPreloadChange?: (
+    entry: PreloadEntry | null,
+    status: PreloadStatus,
+  ) => void;
 };
 
 const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
@@ -111,6 +145,11 @@ const MAX_QUESTIONS = 50;
 const WARNING_THRESHOLD = 20;
 const INITIAL_GENERATION_TIMEOUT = 30000;
 const INITIAL_GENERATION_MAX_RETRIES = 1;
+const PRELOAD_DELAY_MS = 1500;
+const PRELOAD_CACHE_TTL_MS = 5 * 60 * 1000;
+const PRELOAD_BATCH_SIZE = 2;
+const PRELOAD_PARALLELISM = 3;
+const PRELOAD_COMPLETION_TIMEOUT_MS = 30000;
 const OCR_TEXT_MIN_LENGTH = 800;
 const OCR_TEXT_PER_PAGE_MIN = 120;
 const OCR_PAGE_RENDER_SCALE = 2;
@@ -280,6 +319,10 @@ export function UploadView({
   onTestGenerated,
   existingDocument,
   onBack,
+  preloadActivationId = 0,
+  sharedPreload = null,
+  sharedPreloadStatus = "idle",
+  onSharedPreloadChange,
 }: UploadViewProps) {
   const { toast } = useToast();
   const [file, setFile] = useState<File | null>(
@@ -309,8 +352,212 @@ export function UploadView({
   const [selectedPastQuestionSetIds, setSelectedPastQuestionSetIds] = useState<string[]>([]);
   const [isPastQuestionsMode, setIsPastQuestionsMode] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [preloadStatus, setPreloadStatus] =
+    useState<PreloadStatus>(sharedPreloadStatus);
+  const [preloadedEntry, setPreloadedEntry] = useState<PreloadEntry | null>(
+    sharedPreload,
+  );
+  const preloadVersionRef = useRef(0);
+  const preloadStatusRef = useRef<PreloadStatus>(sharedPreloadStatus);
+  const preloadedEntryRef = useRef<PreloadEntry | null>(sharedPreload);
 
   const isTestCreationMode = !!existingDocument;
+
+  const getPreloadKey = () => {
+    if (!existingDocument) {
+      return "";
+    }
+
+    const normalizedTopicFocus = (settings.topicFocus || "")
+      .trim()
+      .toLowerCase();
+    const sortedTypes = [...settings.questionType].sort();
+    const documentSignature =
+      `${existingDocument.file.name}:${existingDocument.text.length}:${existingDocument.text.slice(0, 120)}`;
+
+    return JSON.stringify({
+      documentSignature,
+      questionTypes: sortedTypes,
+      topicFocus: normalizedTopicFocus,
+      difficulty: settings.difficulty,
+      questionSource: settings.questionSource,
+    });
+  };
+
+  const currentPreloadKey = getPreloadKey();
+
+  const syncPreloadState = (
+    entry: PreloadEntry | null,
+    status: PreloadStatus,
+  ) => {
+    preloadedEntryRef.current = entry;
+    preloadStatusRef.current = status;
+    setPreloadedEntry(entry);
+    setPreloadStatus(status);
+    onSharedPreloadChange?.(entry, status);
+  };
+
+  useEffect(() => {
+    if (!sharedPreload || sharedPreload.key !== currentPreloadKey) {
+      return;
+    }
+
+    preloadedEntryRef.current = sharedPreload;
+    preloadStatusRef.current = sharedPreloadStatus;
+    setPreloadedEntry(sharedPreload);
+    setPreloadStatus(sharedPreloadStatus);
+  }, [sharedPreload, sharedPreloadStatus, currentPreloadKey]);
+
+  useEffect(() => {
+    if (
+      !isTestCreationMode ||
+      preloadActivationId === 0 ||
+      !existingDocument ||
+      settings.questionType.length === 0 ||
+      crossDocEnabled ||
+      (settings.pastQuestionSetIds &&
+        settings.pastQuestionSetIds.length > 0)
+    ) {
+      return;
+    }
+
+    const now = Date.now();
+    const cached =
+      sharedPreload && sharedPreload.key === currentPreloadKey
+        ? sharedPreload
+        : null;
+
+    if (cached && now - cached.createdAt <= PRELOAD_CACHE_TTL_MS) {
+      syncPreloadState(cached, "cache-hit");
+      return;
+    }
+
+    syncPreloadState(null, "scheduled");
+
+    let isDisposed = false;
+    const preloadVersion = ++preloadVersionRef.current;
+
+    const timer = setTimeout(async () => {
+      if (isDisposed || preloadVersion !== preloadVersionRef.current) {
+        return;
+      }
+
+      syncPreloadState(null, "preloading");
+
+      try {
+        let effectiveDocumentText = existingDocument.text;
+
+        if (settings.topicFocus?.trim()) {
+          const extracted = await extractTopicSection({
+            documentContent: existingDocument.text,
+            topicFocus: settings.topicFocus.trim(),
+          });
+
+          if (isDisposed || preloadVersion !== preloadVersionRef.current) {
+            return;
+          }
+
+          effectiveDocumentText =
+            extracted.extractedText?.trim() || existingDocument.text;
+        }
+
+        const totalQuestions = Math.max(
+          MIN_QUESTIONS,
+          settings.numberOfQuestions,
+        );
+        const chunkRotator = createChunkRotator(
+          effectiveDocumentText,
+          Math.max(8, Math.min(totalQuestions, 24)),
+        );
+        const allQuestions: Question[] = [];
+        let offset = 0;
+
+        while (offset < totalQuestions) {
+          if (isDisposed || preloadVersion !== preloadVersionRef.current) {
+            return;
+          }
+
+          const remaining = totalQuestions - offset;
+          const batchCount = Math.min(PRELOAD_BATCH_SIZE, remaining);
+          const workers = Math.min(
+            PRELOAD_PARALLELISM,
+            Math.ceil(remaining / PRELOAD_BATCH_SIZE),
+          );
+
+          const results = await Promise.all(
+            Array.from({ length: workers }, () =>
+              generateBatchTestQuestions({
+                documentContent: chunkRotator(),
+                questionTypes: settings.questionType,
+                difficulty: settings.difficulty,
+                questionSource: settings.questionSource,
+                existingQuestions: allQuestions.map((q) => q.question),
+                batchSize: batchCount,
+              }).catch((error) => {
+                console.warn("Preload batch failed", error);
+                return null;
+              }),
+            ),
+          );
+
+          if (isDisposed || preloadVersion !== preloadVersionRef.current) {
+            return;
+          }
+
+          const settled = results.filter(
+            (r): r is { questions: Question[] } => r !== null,
+          );
+          if (settled.length === 0) {
+            break;
+          }
+
+          for (const res of settled) {
+            allQuestions.push(...uniqueQuestions(res.questions));
+          }
+          offset += workers * batchCount;
+        }
+
+        const deduped = uniqueQuestions(allQuestions);
+        if (deduped.length === 0) {
+          throw new Error("No preload questions generated");
+        }
+
+        const entry: PreloadEntry = {
+          key: currentPreloadKey,
+          createdAt: Date.now(),
+          questions: deduped,
+          effectiveDocumentText,
+        };
+
+        syncPreloadState(entry, "ready");
+      } catch (error) {
+        if (isDisposed || preloadVersion !== preloadVersionRef.current) {
+          return;
+        }
+
+        console.warn("Preload failed", error);
+        syncPreloadState(null, "error");
+      }
+    }, PRELOAD_DELAY_MS);
+
+    return () => {
+      isDisposed = true;
+      clearTimeout(timer);
+    };
+  }, [
+    isTestCreationMode,
+    preloadActivationId,
+    existingDocument,
+    sharedPreload,
+    currentPreloadKey,
+    settings.topicFocus,
+    settings.questionType,
+    settings.difficulty,
+    settings.questionSource,
+    settings.numberOfQuestions,
+    settings.pastQuestionSetIds,
+    crossDocEnabled,
+  ]);
 
   // Question count validation
   const questionCountError =
@@ -948,6 +1195,45 @@ export function UploadView({
         return;
       }
 
+      // Use preloaded questions when available
+      const activePreload =
+        preloadedEntry && preloadedEntry.key === currentPreloadKey
+          ? preloadedEntry
+          : null;
+      let result: { questions: Question[] } | null = null;
+
+      if (activePreload) {
+        effectiveDocumentText = activePreload.effectiveDocumentText;
+        result = { questions: activePreload.questions };
+      }
+
+      const isPreloading = preloadStatusRef.current === "preloading";
+
+      if (!result && isPreloading) {
+        setLoadingMessage("Waiting for preloaded questions...");
+        const preloadDeadline =
+          Date.now() + PRELOAD_COMPLETION_TIMEOUT_MS;
+        while (Date.now() < preloadDeadline) {
+          await new Promise((resolve) => setTimeout(resolve, 400));
+          if (preloadStatusRef.current === "ready") {
+            const readyEntry = preloadedEntryRef.current;
+            if (readyEntry && readyEntry.key === currentPreloadKey) {
+              effectiveDocumentText = readyEntry.effectiveDocumentText;
+              result = { questions: readyEntry.questions };
+            }
+            break;
+          }
+          if (preloadStatusRef.current === "error") {
+            break;
+          }
+        }
+      }
+
+      if (result) {
+        onTestGenerated(result.questions, settings, effectiveDocumentText);
+        return;
+      }
+
       let prioritizedTopics: string[] | undefined;
       let seedQ: string[] | undefined;
 
@@ -1556,7 +1842,7 @@ export function UploadView({
               )}
             </div>
           </CardContent>
-          <CardFooter>
+          <CardFooter className="flex-col items-stretch gap-2">
             <Button
               onClick={handleGenerateTest}
               disabled={
@@ -1568,6 +1854,19 @@ export function UploadView({
               {isLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
               {getButtonText()}
             </Button>
+            {!isLoading && (
+              <div className="text-xs text-muted-foreground text-center">
+                {preloadStatus === "scheduled" && "Preload scheduled..."}
+                {preloadStatus === "preloading" &&
+                  `Preloading all questions (${settings.numberOfQuestions})...`}
+                {preloadStatus === "ready" &&
+                  `Preloaded ${preloadedEntry?.questions.length ?? 0} of ${settings.numberOfQuestions} questions.`}
+                {preloadStatus === "cache-hit" &&
+                  `Reused ${preloadedEntry?.questions.length ?? 0} cached questions.`}
+                {preloadStatus === "error" &&
+                  "Preload failed. Generate Test will still work normally."}
+              </div>
+            )}
           </CardFooter>
         </Card>
       </div>

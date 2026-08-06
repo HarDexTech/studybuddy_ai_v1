@@ -64,6 +64,21 @@ type TestRestoreSnapshot = {
   generatedQuestionCount: number;
 };
 
+type SharedPreloadEntry = {
+  key: string;
+  createdAt: number;
+  questions: Question[];
+  effectiveDocumentText: string;
+};
+
+type SharedPreloadStatus =
+  | "idle"
+  | "scheduled"
+  | "preloading"
+  | "ready"
+  | "cache-hit"
+  | "error";
+
 export default function Home() {
   const [view, setView] = useState<
     "upload" | "studying" | "summarizing" | "testing" | "results"
@@ -89,6 +104,11 @@ export default function Home() {
     "studying",
   );
   const [testCreationMode, setTestCreationMode] = useState(false);
+  const [preloadActivationId, setPreloadActivationId] = useState(0);
+  const [sharedPreload, setSharedPreload] = useState<{
+    entry: SharedPreloadEntry | null;
+    status: SharedPreloadStatus;
+  }>({ entry: null, status: "idle" });
 
   useEffect(() => {
     let cancelled = false;
@@ -259,6 +279,8 @@ export default function Home() {
   const handleStartTestCreation = (origin: "studying" | "summarizing") => {
     setTestOrigin(origin);
     setTestCreationMode(true);
+    setSharedPreload({ entry: null, status: "idle" });
+    setPreloadActivationId((prev) => prev + 1);
     setView("upload"); // Reuse upload view for test settings
   };
 
@@ -281,6 +303,7 @@ export default function Home() {
     setEffectiveDocumentText(nextEffectiveDocumentText);
     setRestoreSnapshot(null);
     setShowRestoredSessionNotice(false);
+    setSharedPreload({ entry: null, status: "idle" });
     setView("testing");
   };
 
@@ -305,6 +328,7 @@ export default function Home() {
     setRestoreSnapshot(null);
     setShowRestoredSessionNotice(false);
     setTestCreationMode(false);
+    setSharedPreload({ entry: null, status: "idle" });
   };
 
   const renderView = () => {
@@ -316,6 +340,12 @@ export default function Home() {
             onTestGenerated={handleTestGenerated}
             existingDocument={testCreationMode ? documentInfo : null}
             onBack={() => setView(testOrigin)}
+            preloadActivationId={preloadActivationId}
+            sharedPreload={sharedPreload.entry}
+            sharedPreloadStatus={sharedPreload.status}
+            onSharedPreloadChange={(entry, status) =>
+              setSharedPreload({ entry, status })
+            }
           />
         );
       case "studying":
@@ -379,6 +409,12 @@ export default function Home() {
           <UploadView
             onDocumentUploaded={handleDocumentUploaded}
             onTestGenerated={handleTestGenerated}
+            preloadActivationId={preloadActivationId}
+            sharedPreload={sharedPreload.entry}
+            sharedPreloadStatus={sharedPreload.status}
+            onSharedPreloadChange={(entry, status) =>
+              setSharedPreload({ entry, status })
+            }
           />
         );
     }
