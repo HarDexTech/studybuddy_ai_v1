@@ -24,7 +24,13 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import jsPDF from "jspdf";
 
-type DocInfo = { name: string; type: string; text: string; structuredText?: string };
+type DocInfo = {
+  id: string;
+  name: string;
+  type: string;
+  text: string;
+  structuredText?: string;
+};
 
 type SummaryViewProps = {
   documents: DocInfo[];
@@ -59,11 +65,7 @@ export function SummaryView({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          documents: documents.map((d) => ({
-            name: d.name,
-            content: d.text,
-            structuredText: d.structuredText,
-          })),
+          documents: documents.map((d) => ({ id: d.id, name: d.name })),
           forceRegenerate: force,
         }),
       });

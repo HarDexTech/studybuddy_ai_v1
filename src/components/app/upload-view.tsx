@@ -7,11 +7,13 @@ const topicAnalysisCache = new Map<string, { topics: string[]; seedQuestions: st
 import * as pdfjs from "pdfjs-dist";
 import mammoth from "mammoth";
 import JSZip from "jszip";
-import { generateBatchTestQuestions } from "@/ai/flows/generate-batch-test-questions";
-import { generateCrossDocumentQuestions } from "@/ai/flows/generate-cross-document-questions";
-import { extractTopicSection } from "@/ai/flows/extract-topic-section";
-import { analyzePastQuestionTopics } from "@/ai/flows/analyze-past-question-topics";
-import { structureDocument } from "@/ai/flows/structure-document";
+import {
+  analyzePastQuestionTopics,
+  extractTopicSection,
+  generateBatchTestQuestions,
+  generateCrossDocumentQuestions,
+  structureDocument,
+} from "@/app/actions/ai-actions";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import {
   AlertDialog,
@@ -69,6 +71,10 @@ import type {
   QuestionType,
   TestSettings,
 } from "@/lib/types";
+import {
+  chooseParsingPlan,
+  recordParsingObservation,
+} from "@/lib/parsing-capability";
 import { cn, createChunkRotator, pickRandomDocumentChunk } from "@/lib/utils";
 import {
   AlertTriangle,
@@ -190,14 +196,16 @@ type UploadViewProps = {
     text: string,
     file: { name: string; type: string; size: number },
     structuredText?: string,
+    documentId?: string,
   ) => void;
   onTestGenerated: (
     questions: Question[],
     settings: TestSettings,
     effectiveDocumentText: string,
-    crossDocDocuments?: { name: string; content: string }[],
+    crossDocDocuments?: { id: string; name: string; content: string }[],
   ) => void;
   existingDocument?: {
+    id?: string;
     text: string;
     file: { name: string; type: string; size: number };
   } | null;
@@ -416,6 +424,7 @@ export function UploadView({
   const [isLoading, setIsLoading] = useState(false);
   const [loadingMessage, setLoadingMessage] = useState("");
   const [isParsing, setIsParsing] = useState(false);
+  const parsingAbortController = useRef<AbortController | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [parsingProgress, setParsingProgress] = useState<number | null>(null);
   const [manualText, setManualText] = useState("");
@@ -567,7 +576,7 @@ export function UploadView({
                 questionSource: settings.questionSource,
                 existingQuestions: allQuestions.map((q) => q.question),
                 batchSize: batchCount,
-              }).catch((error) => {
+              }, existingDocument.id ?? "").catch((error) => {
                 console.warn("Preload batch failed", error);
                 return null;
               }),
@@ -672,7 +681,7 @@ export function UploadView({
       setRecentDocs(
         docs.filter(
           (d) =>
-            d.id !== existingDocument?.file.name &&
+            d.id !== existingDocument?.id &&
             d.text !== existingDocument?.text,
         ),
       );
@@ -944,6 +953,71 @@ export function UploadView({
     setIsParsing(true);
     setParsingProgress(0);
     setLoadingMessage(parsingSteps[0]);
+    parsingAbortController.current = new AbortController();
+    const parsingStartedAt = performance.now();
+    const parsingPlan = chooseParsingPlan({
+      mimeType: selectedFile.type,
+      sizeBytes: selectedFile.size,
+    });
+    if (parsingPlan.mode === "server") {
+      setLoadingMessage(
+        `This ${parsingPlan.reason}; using a conservative browser parsing budget...`,
+      );
+    }
+
+    if (parsingPlan.mode === "server") {
+      try {
+        const formData = new FormData();
+        formData.append("file", selectedFile);
+        formData.append("lastModified", String(selectedFile.lastModified));
+        const response = await fetch("/api/documents/parse", {
+          method: "POST",
+          body: formData,
+          signal: parsingAbortController.current.signal,
+        });
+        const result = (await response.json()) as
+          | CachedDocument
+          | { error?: string };
+
+        if (response.status === 401 || response.status === 403) {
+          throw new Error(
+            "AUTH_REQUIRED: sign in before uploading documents.",
+          );
+        }
+
+        if (!response.ok || !("id" in result)) {
+          throw new Error(
+            "error" in result && result.error
+              ? result.error
+              : "SERVER_PARSE_FAILED",
+          );
+        }
+
+        invalidateRecentDocsCache();
+        onDocumentUploaded(
+          result.text,
+          { name: result.name, type: result.type, size: result.size },
+          result.structuredText,
+          result.id,
+        );
+        recordParsingObservation({
+          durationMs: performance.now() - parsingStartedAt,
+          succeeded: true,
+        });
+        return;
+      } catch (error) {
+        if (error instanceof DOMException && error.name === "AbortError") {
+          return;
+        }
+        if (
+          error instanceof Error &&
+          error.message.startsWith("AUTH_REQUIRED")
+        ) {
+          throw error;
+        }
+        console.warn("Server parsing failed; falling back to client parsing:", error);
+      }
+    }
 
     const arrayBufferReader = new FileReader();
     arrayBufferReader.readAsArrayBuffer(selectedFile);
@@ -1059,6 +1133,7 @@ export function UploadView({
         type: selectedFile.type,
         size: selectedFile.size,
       };
+      const documentId = crypto.randomUUID();
 
       if (isPastQuestionsMode) {
         const now = Date.now();
@@ -1101,21 +1176,45 @@ export function UploadView({
 
       addRecentDocument({
         ...fileInfo,
-        id: `${selectedFile.name}-${selectedFile.lastModified}`,
+        id: documentId,
         lastModified: selectedFile.lastModified,
         text: text,
         structuredText,
       }).catch((err) => console.error("Failed to persist recent document:", err));
       invalidateRecentDocsCache();
 
-      onDocumentUploaded(text, fileInfo, structuredText);
+      onDocumentUploaded(
+        text,
+        fileInfo,
+        structuredText,
+        documentId,
+      );
+      recordParsingObservation({
+        durationMs: performance.now() - parsingStartedAt,
+        succeeded: true,
+      });
     } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") {
+        return;
+      }
+      recordParsingObservation({
+        durationMs: performance.now() - parsingStartedAt,
+        succeeded: false,
+      });
       console.error("Parsing error:", error);
       handleError("Failed to parse the document.");
     } finally {
+      parsingAbortController.current = null;
       setIsParsing(false);
       setParsingProgress(null);
     }
+  };
+
+  const cancelParsing = () => {
+    parsingAbortController.current?.abort();
+    setIsParsing(false);
+    setParsingProgress(null);
+    setLoadingMessage("");
   };
 
   const handleSelectRecent = (doc: CachedDocument) => {
@@ -1127,6 +1226,7 @@ export function UploadView({
         size: doc.size,
       },
       doc.structuredText,
+      doc.id,
     );
   };
 
@@ -1161,8 +1261,9 @@ export function UploadView({
       return;
     }
 
+    const documentId = crypto.randomUUID();
     addRecentDocument({
-      id: `pasted-text-${now}`,
+      id: documentId,
       name: pastedDocumentName,
       type: "text/plain",
       size: pastedDocumentSize,
@@ -1171,11 +1272,16 @@ export function UploadView({
     }).catch((err) => console.error("Failed to persist recent document:", err));
     invalidateRecentDocsCache();
 
-    onDocumentUploaded(trimmedText, {
-      name: pastedDocumentName,
-      type: "text/plain",
-      size: pastedDocumentSize,
-    });
+    onDocumentUploaded(
+      trimmedText,
+      {
+        name: pastedDocumentName,
+        type: "text/plain",
+        size: pastedDocumentSize,
+      },
+      undefined,
+      documentId,
+    );
   };
 
   const handleError = (message: string, title: string = "Error") => {
@@ -1197,6 +1303,14 @@ export function UploadView({
         variant: "destructive",
         title: "No document context",
         description: "Something went wrong. Please upload the document again.",
+      });
+      return;
+    }
+    if (!existingDocument.id) {
+      toast({
+        variant: "destructive",
+        title: "Document unavailable",
+        description: "Reload the document before generating a test.",
       });
       return;
     }
@@ -1244,8 +1358,16 @@ export function UploadView({
       if (crossDocEnabled && selectedDocIds.length > 0) {
         const additionalDocs = await getMultipleRecentDocuments(selectedDocIds);
         const allDocs = [
-          { name: existingDocument.file.name, content: existingDocument.text },
-          ...additionalDocs.map((d) => ({ name: d.name, content: d.text })),
+          {
+            id: existingDocument.id,
+            name: existingDocument.file.name,
+            content: existingDocument.text,
+          },
+          ...additionalDocs.map((d) => ({
+            id: d.id,
+            name: d.name,
+            content: d.text,
+          })),
         ];
 
         // Build combined effective text with doc markers
@@ -1261,7 +1383,7 @@ export function UploadView({
           questionSource: settings.questionSource,
           numberOfQuestions: Math.min(settings.numberOfQuestions, 10),
           existingQuestions: [],
-        });
+        }, allDocs.map((document) => document.id));
 
         if (!result.questions || result.questions.length === 0) {
           throw new Error("Failed to generate cross-document questions.");
@@ -1367,7 +1489,7 @@ export function UploadView({
         batchSize: initialBatchSize,
         priorityTopics: prioritizedTopics,
         seedQuestions: seedQ,
-      });
+      }, existingDocument.id);
 
       if (!batchResult.questions || batchResult.questions.length === 0) {
         throw new Error("Failed to generate initial questions.");
@@ -2000,6 +2122,9 @@ export function UploadView({
                       </p>
                     </div>
                   )}
+                  <Button type="button" variant="outline" size="sm" onClick={cancelParsing}>
+                    Cancel
+                  </Button>
                 </div>
               ) : (
                 <>

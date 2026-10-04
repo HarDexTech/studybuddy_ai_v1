@@ -44,35 +44,21 @@ Document Content:
 ${input.documentContent}
 \`\`\`
 
-Provide a clear, educational explanation. Return ONLY valid JSON in this exact format with no markdown:
-{
-  "explanation": "your detailed explanation here"
-}`;
+Provide a clear, educational explanation as plain text or Markdown.
+Do not return JSON, labels, or meta-commentary.`;
 
 export async function explainQuestion(
   input: ExplainQuestionInput,
 ): Promise<ExplainQuestionOutput> {
   await enforceRateLimit(RateLimitPresets.explain);
-  return callJson(SYSTEM, USER_PROMPT(input), (raw) => {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(raw);
-    } catch (error) {
-      throw new Error(
-        `Failed to parse explanation response: ${
-          error instanceof Error ? error.message : "unknown error"
-        }. Response preview: ${raw.slice(0, 200)}`,
-      );
-    }
-    if (
-      parsed === null ||
-      typeof parsed !== "object" ||
-      typeof (parsed as { explanation?: unknown }).explanation !== "string"
-    ) {
-      throw new Error(
-        `Missing or invalid "explanation" field. Response preview: ${raw.slice(0, 200)}`,
-      );
-    }
-    return parsed as ExplainQuestionOutput;
-  });
+  const explanation = await callJson(
+    SYSTEM,
+    USER_PROMPT(input),
+    (raw) => raw.trim(),
+    { skipStripFences: true },
+  );
+  if (!explanation) {
+    throw new Error("AI_EMPTY_EXPLANATION: the model returned no explanation.");
+  }
+  return { explanation };
 }

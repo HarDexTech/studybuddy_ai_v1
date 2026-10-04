@@ -1,13 +1,17 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback } from "react";
-import { generateBatchTestQuestions } from "@/ai/flows/generate-batch-test-questions";
-import { generateCrossDocumentQuestions } from "@/ai/flows/generate-cross-document-questions";
 import {
+  explainQuestion,
+  createStudySessionAction,
+  updateStudySessionAction,
+  completeStudySessionAction,
+  abandonStudySessionAction,
+  generateBatchTestQuestions,
+  generateCrossDocumentQuestions,
   validateUserAnswer,
   type ValidateUserAnswerOutput,
-} from "@/ai/flows/validate-user-answer";
-import { explainQuestion } from "@/ai/flows/explain-question";
+} from "@/app/actions/ai-actions";
 import type {
   TestResult,
   TestSettings,
@@ -61,17 +65,17 @@ import {
   ChevronLeft,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
-import { clearTestProgress, saveTestProgress } from "@/lib/storage";
 import { createChunkRotator, gradeFillInTheBlank } from "@/lib/utils";
 
 type TestViewProps = {
   initialQuestions: Question[];
-  documentInfo: { text: string };
+  documentInfo: { id?: string; text: string };
   effectiveDocumentText: string;
   settings: TestSettings;
-  crossDocDocuments?: { name: string; content: string }[];
+  crossDocDocuments?: { id: string; name: string; content: string }[];
   onTestFinished: (results: TestResult[], totalGenerated: number) => void;
   showRestoreNotice?: boolean;
+  restoredSessionId?: string;
   onBack: () => void;
   restoreSnapshot?: {
     questions: Question[];
@@ -143,11 +147,13 @@ function AskAiDialog({
   open,
   onOpenChange,
   documentText,
+  documentId,
   question,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   documentText: string;
+  documentId?: string;
   question: Question;
 }) {
   const [isLoading, setIsLoading] = useState(false);
@@ -175,7 +181,7 @@ function AskAiDialog({
         documentContent: documentText,
         question: question.question,
         correctAnswer: correctAnswer,
-      });
+      }, documentId ?? "");
       setExplanation(result.explanation);
     } catch (error) {
       console.error("Ask AI Error:", error);
@@ -243,6 +249,7 @@ export function TestView({
   onTestFinished,
   showRestoreNotice = false,
   restoreSnapshot = null,
+  restoredSessionId,
   onBack,
 }: TestViewProps) {
   const { toast, dismiss } = useToast();
@@ -310,9 +317,40 @@ export function TestView({
     string | null
   >(null);
   const [sessionRestored, setSessionRestored] = useState(showRestoreNotice);
+  const [studySessionId, setStudySessionId] = useState<string | null>(
+    restoredSessionId ?? null,
+  );
 
   const totalQuestionsToGenerate = settings.numberOfQuestions;
   const currentQuestion = questions[currentQuestionIndex] ?? questions[0];
+
+  useEffect(() => {
+    if (studySessionId || questions.length === 0) return;
+    const documentIds =
+      crossDocDocuments && crossDocDocuments.length >= 2
+        ? crossDocDocuments.map((document) => document.id)
+        : documentInfo.id
+          ? [documentInfo.id]
+          : [];
+    if (documentIds.length === 0) return;
+    createStudySessionAction(documentIds, settings, questions)
+      .then(setStudySessionId)
+      .catch((error) => {
+        console.error("Failed to create study session:", error);
+        toast({
+          variant: "destructive",
+          title: "Session setup failed",
+          description: "Your answers cannot be securely saved yet.",
+        });
+      });
+  }, [
+    crossDocDocuments,
+    documentInfo.id,
+    questions,
+    settings,
+    studySessionId,
+    toast,
+  ]);
 
   if (questions.length === 0) {
     return (
@@ -349,9 +387,11 @@ export function TestView({
 
   const finishTest = useCallback(
     (partialResults: TestResult[], reason: string) => {
-      clearTestProgress().catch((err) =>
-        console.error("Failed to clear test progress:", err),
-      );
+      if (studySessionId) {
+        completeStudySessionAction(studySessionId).catch((err) =>
+          console.error("Failed to complete study session:", err),
+        );
+      }
 
       // Pad missing questions (skipped or never reached) so the results
       // always contain every generated question.
@@ -375,7 +415,7 @@ export function TestView({
 
       onTestFinished(paddedResults, questions.length);
     },
-    [onTestFinished, questions],
+    [onTestFinished, questions, studySessionId],
   );
 
   useEffect(() => {
@@ -401,7 +441,6 @@ export function TestView({
       backgroundGenerationStarted.current = true;
     }
   }, [restoreSnapshot, questions.length, totalQuestionsToGenerate]);
-
   useEffect(() => {
     const payload = {
       docSignature: `${documentInfo.text.length}:${documentInfo.text.slice(0, 120)}`,
@@ -419,9 +458,19 @@ export function TestView({
       generatedQuestionCount: questions.length,
     };
 
-    saveTestProgress(payload).catch((err) =>
-      console.error("Failed to persist test progress:", err),
-    );
+    if (studySessionId) {
+      updateStudySessionAction(studySessionId, {
+        currentQuestionIndex,
+        userAnswer,
+        results,
+        currentResult,
+        isAnswered,
+        timeLeft,
+        questions,
+      }).catch((err) =>
+        console.error("Failed to persist study session:", err),
+      );
+    }
   }, [
     documentInfo.text,
     documentInfo,
@@ -434,6 +483,7 @@ export function TestView({
     isAnswered,
     timeLeft,
     questions,
+    studySessionId,
   ]);
 
   // Check if next question is ready
@@ -575,7 +625,7 @@ export function TestView({
                 ),
                 priorityTopics: settings.priorityTopics,
                 seedQuestions: settings.seedQuestions,
-              })
+              }, crossDocDocuments.map((document) => document.id))
             : generateBatchTestQuestions({
                 documentContent: chunkRotator.current(),
                 questionTypes: settings.questionType,
@@ -587,7 +637,7 @@ export function TestView({
                 batchSize,
                 priorityTopics: settings.priorityTopics,
                 seedQuestions: settings.seedQuestions,
-              });
+              }, documentInfo.id ?? "");
 
           const result = (await Promise.race([
             generationPromise.then((r) => ({
@@ -819,14 +869,12 @@ export function TestView({
               ),
             );
 
+            if (!studySessionId) {
+              throw new Error("STUDY_SESSION_NOT_READY");
+            }
             validationResult = await Promise.race([
               validateUserAnswer({
-                documentContent:
-                  crossDocDocuments && crossDocDocuments.length >= 2
-                    ? crossDocDocuments
-                        .map((d) => d.content)
-                        .join("\n\n")
-                    : documentInfo.text,
+                documentContent: "",
                 question: currentQuestion.question,
                 userAnswer: userAnswer,
                 correctAnswer:
@@ -834,7 +882,10 @@ export function TestView({
                     ? String(currentQuestion.correctAnswer)
                     : "",
                 questionSource: settings.questionSource,
-              }),
+              },
+              studySessionId,
+              currentQuestionIndex,
+              ),
               timeoutPromise,
             ]);
 
@@ -1127,6 +1178,7 @@ export function TestView({
           open={isAskAiDialogOpen}
           onOpenChange={setIsAskAiDialogOpen}
           documentText={documentInfo.text}
+          documentId={documentInfo.id}
           question={currentQuestion}
         />
       )}

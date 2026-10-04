@@ -1,7 +1,11 @@
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
-import { answerDocumentQuestion, type AnswerDocumentQuestionOutput } from '@/ai/flows/answer-document-question';
+import {
+    askDocumentQuestion,
+    type AskDocumentQuestionInput,
+    type AnswerDocumentQuestionOutput,
+} from '@/app/actions/study-actions';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -12,6 +16,7 @@ import remarkGfm from 'remark-gfm';
 import { useToast } from '@/hooks/use-toast';
 
 type StudyViewProps = {
+    documentId?: string;
     document: { name: string, type: string };
     documentText: string;
     structuredText?: string;
@@ -21,7 +26,7 @@ type StudyViewProps = {
     onBack?: () => void;
 };
 
-function QnaSection({ documentText }: { documentText: string }) {
+function QnaSection({ documentId }: { documentId?: string }) {
     const { toast } = useToast();
     const [qnaQuestion, setQnaQuestion] = useState('');
     const [qnaAnswer, setQnaAnswer] = useState<AnswerDocumentQuestionOutput | null>(null);
@@ -33,10 +38,20 @@ function QnaSection({ documentText }: { documentText: string }) {
         setIsQnaLoading(true);
         setQnaAnswer(null);
         try {
-            const result = await answerDocumentQuestion({
-                documentContent: documentText,
+            if (!documentId) {
+                toast({
+                    variant: 'destructive',
+                    title: 'Document unavailable',
+                    description: 'Reload the document before asking a question.',
+                });
+                return;
+            }
+
+            const input: AskDocumentQuestionInput = {
+                documentId,
                 question: qnaQuestion,
-            });
+            };
+            const result = await askDocumentQuestion(input);
             setQnaAnswer(result);
         } catch (error) {
             console.error('Q&A Error:', error);
@@ -109,7 +124,7 @@ function DocumentPreview({ file, textContent, structuredText }: { file: { name: 
     );
 }
 
-export function StudyView({ document, documentText, structuredText, onStartTest, onStartNew, onSummarize, onBack }: StudyViewProps) {
+export function StudyView({ documentId, document, documentText, structuredText, onStartTest, onStartNew, onSummarize, onBack }: StudyViewProps) {
     return (
         <div className="w-full max-w-5xl mx-auto flex-grow flex flex-col space-y-6 animate-in fade-in-50 duration-500">
             <Button onClick={onBack ?? onStartNew} variant="ghost" size="sm" className="gap-1 self-start">
@@ -145,7 +160,7 @@ export function StudyView({ document, documentText, structuredText, onStartTest,
                     </div>
                 </CardHeader>
                 <CardContent className="space-y-8">
-                     <QnaSection documentText={documentText} />
+                     <QnaSection documentId={documentId} />
                      <DocumentPreview file={document} textContent={documentText} structuredText={structuredText} />
                 </CardContent>
             </Card>

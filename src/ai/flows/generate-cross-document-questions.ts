@@ -94,7 +94,12 @@ ${input.seedQuestions.map((q) => `- ${q}`).join('\n')}`;
 
   prompt += `\n\nExisting questions to avoid: ${input.existingQuestions.length > 0 ? input.existingQuestions.map((q) => `"${q}"`).join(', ') : '(none)'}
 
-Return ONLY valid JSON with a 'questions' array. Each question must have 'type', 'question', and for multiple choice also 'choices' (4 items) and 'correctAnswer'. For true/false set correctAnswer as boolean. No markdown.`;
+Return one tab-delimited record per question, with no header and no markdown:
+TYPE<TAB>QUESTION<TAB>CHOICES<TAB>CORRECT_ANSWER
+For multiple choice, put four choices in CHOICES separated by " || ".
+For true or false, leave CHOICES empty and use true or false as CORRECT_ANSWER.
+For fill-in-the-blank and theory, leave CHOICES and CORRECT_ANSWER empty.
+Keep each question on one line and do not use tab characters inside fields.`;
 
   return prompt;
 };
@@ -129,21 +134,30 @@ export async function generateCrossDocumentQuestions(
 ): Promise<GenerateCrossDocumentQuestionsOutput> {
   await enforceRateLimit(RateLimitPresets.crossDoc);
   return callJson(SYSTEM, USER_PROMPT(input), (raw) => {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(raw);
-    } catch (error) {
-      throw new Error(
-        `Failed to parse cross-document response: ${
-          error instanceof Error ? error.message : 'unknown error'
-        }. Response preview: ${raw.slice(0, 200)}`,
-      );
+    const questions = raw
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line): RawQuestion | null => {
+        const [type, question, choicesText = "", correctAnswer = ""] = line.split("\t");
+        if (!type || !question) return null;
+        return {
+          type,
+          question,
+          choices: choicesText
+            ? choicesText.split(" || ").map((choice) => choice.trim()).filter(Boolean)
+            : undefined,
+          correctAnswer:
+            type === "true or false"
+              ? correctAnswer.trim().toLowerCase() === "true"
+              : correctAnswer.trim() || undefined,
+        };
+      })
+      .filter((question): question is RawQuestion => question !== null);
+    const normalized = normalizeBatch({ questions });
+    if (normalized.questions.length === 0) {
+      throw new Error(`Invalid compact cross-document response. Preview: ${raw.slice(0, 200)}`);
     }
-    if (parsed === null || typeof parsed !== 'object' || !Array.isArray((parsed as { questions?: unknown }).questions)) {
-      throw new Error(
-        `Cross-document response missing "questions" array. Response preview: ${raw.slice(0, 200)}`,
-      );
-    }
-    return normalizeBatch(parsed as { questions?: unknown });
+    return normalized;
   });
 }

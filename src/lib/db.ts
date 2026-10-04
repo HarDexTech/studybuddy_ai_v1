@@ -57,8 +57,13 @@ export const SCHEMA_DDL = /* sql */ `
     last_modified BIGINT NOT NULL,
     text TEXT NOT NULL,
     structured_text TEXT,
+    status TEXT NOT NULL DEFAULT 'ready',
+    processing_error TEXT,
     created_at BIGINT NOT NULL DEFAULT floor(extract(epoch from now()))::bigint
   );
+
+  ALTER TABLE documents ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'ready';
+  ALTER TABLE documents ADD COLUMN IF NOT EXISTS processing_error TEXT;
 
   CREATE INDEX IF NOT EXISTS idx_documents_user ON documents (user_id);
   CREATE INDEX IF NOT EXISTS idx_documents_created ON documents (created_at DESC);
@@ -85,6 +90,43 @@ export const SCHEMA_DDL = /* sql */ `
     payload TEXT NOT NULL,
     updated_at BIGINT NOT NULL
   );
+
+  CREATE TABLE IF NOT EXISTS study_sessions (
+    id TEXT PRIMARY KEY NOT NULL,
+    user_id TEXT NOT NULL,
+    document_ids TEXT NOT NULL,
+    settings TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active',
+    progress TEXT,
+    created_at BIGINT NOT NULL DEFAULT floor(extract(epoch from now()))::bigint,
+    completed_at BIGINT
+  );
+
+  CREATE TABLE IF NOT EXISTS study_questions (
+    id TEXT PRIMARY KEY NOT NULL,
+    session_id TEXT NOT NULL REFERENCES study_sessions(id) ON DELETE CASCADE,
+    question_index INT NOT NULL,
+    payload TEXT NOT NULL,
+    created_at BIGINT NOT NULL DEFAULT floor(extract(epoch from now()))::bigint,
+    UNIQUE(session_id, question_index)
+  );
+
+  CREATE TABLE IF NOT EXISTS study_answers (
+    id BIGSERIAL PRIMARY KEY,
+    session_id TEXT NOT NULL REFERENCES study_sessions(id) ON DELETE CASCADE,
+    question_id TEXT NOT NULL REFERENCES study_questions(id) ON DELETE CASCADE,
+    user_answer TEXT NOT NULL,
+    score INT NOT NULL,
+    feedback TEXT NOT NULL,
+    created_at BIGINT NOT NULL DEFAULT floor(extract(epoch from now()))::bigint,
+    UNIQUE(session_id, question_id)
+  );
+
+  ALTER TABLE study_sessions ADD COLUMN IF NOT EXISTS progress TEXT;
+
+  CREATE INDEX IF NOT EXISTS idx_study_sessions_user ON study_sessions (user_id);
+  CREATE INDEX IF NOT EXISTS idx_study_questions_session ON study_questions (session_id);
+  CREATE INDEX IF NOT EXISTS idx_study_answers_session ON study_answers (session_id);
 
   CREATE TABLE IF NOT EXISTS rate_limit_buckets (
     key TEXT PRIMARY KEY NOT NULL,

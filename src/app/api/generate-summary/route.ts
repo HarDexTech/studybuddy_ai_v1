@@ -9,7 +9,6 @@ import {
 } from "@/ai/provider";
 import { withRetry } from "@/ai/retry";
 import {
-  GenerateDocumentSummaryInputSchema,
   SUMMARY_SYSTEM,
   SUMMARY_USER_PROMPT,
   checkHeadingHealth,
@@ -19,11 +18,21 @@ import {
 } from "@/ai/summary-helpers";
 import { RateLimitPresets, enforceRateLimit } from "@/lib/rate-limit";
 import { getCachedSummary, saveSummary } from "@/lib/storage";
+import { getMultipleRecentDocuments } from "@/lib/storage";
+import { retrieveTestContext } from "@/ai/rag";
+import { z } from "zod";
 
 export const runtime = "nodejs";
 export const maxDuration = 120;
 
 const SUMMARY_MAX_OUTPUT_TOKENS = 12000;
+const SummaryRequestSchema = z.object({
+  documents: z.array(z.object({ id: z.string().trim().min(1) })).min(1),
+  priorityTopics: z
+    .array(z.object({ topic: z.string(), frequency: z.number().optional() }))
+    .optional(),
+  forceRegenerate: z.boolean().optional(),
+});
 
 function streamText(text: string): Response {
   const encoder = new TextEncoder();
@@ -51,22 +60,45 @@ export async function POST(request: NextRequest) {
   }
 
   let documents: { name: string; content: string; structuredText?: string }[];
+  let documentIds: string[];
   let priorityTopics: { topic: string; frequency?: number }[] | undefined;
   let forceRegenerate: boolean | undefined;
 
   try {
     const body = await request.json();
-    const parsed = GenerateDocumentSummaryInputSchema.parse(body);
-    documents = parsed.documents;
+    const parsed = SummaryRequestSchema.parse(body);
+    documentIds = parsed.documents.map((document) => document.id).filter(Boolean);
+    if (documentIds.length !== parsed.documents.length) {
+      throw new Error("DOCUMENT_IDS_REQUIRED");
+    }
+    const authorizedDocuments = await getMultipleRecentDocuments(documentIds);
+    if (authorizedDocuments.length !== documentIds.length) {
+      throw new Error("DOCUMENT_ACCESS_DENIED");
+    }
+    documents = await Promise.all(
+      authorizedDocuments.map(async (document, index) => ({
+        name: document.name,
+        content: await retrieveTestContext(
+          "key concepts definitions principles facts examples",
+          { docId: documentIds[index], limit: 20 },
+        ),
+        structuredText: document.structuredText,
+      })),
+    );
+    if (documents.some((document) => !document.content)) {
+      throw new Error("DOCUMENT_CONTEXT_UNAVAILABLE");
+    }
     priorityTopics = parsed.priorityTopics;
     forceRegenerate = parsed.forceRegenerate;
-  } catch {
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "INVALID_INPUT";
     return Response.json(
       {
-        error:
-          "INVALID_INPUT: documents must contain at least one { name, content } entry.",
+        error: message.startsWith("DOCUMENT_")
+          ? message
+          : "INVALID_INPUT: document IDs are required.",
       },
-      { status: 400 },
+      { status: message === "DOCUMENT_ACCESS_DENIED" ? 403 : 400 },
     );
   }
 

@@ -37,6 +37,7 @@ function chunkText(text: string, chunkSize = CHUNK_SIZE, overlap = CHUNK_OVERLAP
 export async function indexDocument(docId: string, userId: string, text: string): Promise<void> {
   const chunks = chunkText(text);
 
+  await deleteDocumentChunks(docId);
   for (let i = 0; i < chunks.length; i++) {
     await sql`
       INSERT INTO document_chunks (user_id, doc_id, chunk_index, content)
@@ -61,18 +62,19 @@ export interface ChunkResult {
 export async function searchChunks(
   query: string,
   userId: string,
-  options: { docId?: string; limit?: number } = {},
+  options: { docId?: string; docIds?: string[]; limit?: number } = {},
 ): Promise<ChunkResult[]> {
   const limit = options.limit ?? 5;
+  const docIds = options.docIds ?? (options.docId ? [options.docId] : undefined);
 
   let rows: { content: string; chunk_index: number; doc_id: string }[];
 
-  if (options.docId) {
+  if (docIds && docIds.length > 0) {
     rows = await sql`
       SELECT content, chunk_index, doc_id
       FROM document_chunks
       WHERE user_id = ${userId}
-        AND doc_id = ${options.docId}
+        AND doc_id = ANY(${docIds}::text[])
         AND tsv_content @@ plainto_tsquery('english', ${query})
       ORDER BY ts_rank(tsv_content, plainto_tsquery('english', ${query})) DESC
       LIMIT ${limit}
@@ -90,11 +92,11 @@ export async function searchChunks(
 
   // If full-text search returns nothing, fall back to random chunks
   if (!rows || rows.length === 0) {
-    if (options.docId) {
+    if (docIds && docIds.length > 0) {
       rows = await sql`
         SELECT content, chunk_index, doc_id
         FROM document_chunks
-        WHERE user_id = ${userId} AND doc_id = ${options.docId}
+        WHERE user_id = ${userId} AND doc_id = ANY(${docIds}::text[])
         ORDER BY RANDOM()
         LIMIT ${limit}
       ` as any;
@@ -119,7 +121,7 @@ export async function searchChunks(
 export async function buildContext(
   query: string,
   userId: string,
-  options: { docId?: string; limit?: number } = {},
+  options: { docId?: string; docIds?: string[]; limit?: number } = {},
 ): Promise<string> {
   const results = await searchChunks(query, userId, options);
   if (results.length === 0) return '';
@@ -130,7 +132,7 @@ export async function buildContext(
 
 export async function retrieveTestContext(
   query: string,
-  options: { limit?: number } = {},
+  options: { docId?: string; docIds?: string[]; limit?: number } = {},
 ): Promise<string> {
   const { requireUserId } = await import('@/lib/auth');
   const userId = await requireUserId();

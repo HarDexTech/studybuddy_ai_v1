@@ -65,11 +65,10 @@ Grade the answer on a score from 0 to 100. Award partial credit: an answer that 
 
 Provide helpful feedback.
 
-Return ONLY valid JSON in this exact format with no markdown:
-{
-  "score": 0,
-  "feedback": "your feedback here"
-}`;
+Return exactly two lines and nothing else:
+SCORE<TAB>number from 0 to 100
+FEEDBACK<TAB>brief helpful feedback on one line
+Do not use JSON or Markdown in the response.`;
 
 export async function validateUserAnswer(
   input: ValidateUserAnswerInput,
@@ -79,33 +78,16 @@ export async function validateUserAnswer(
   const raw = await callJsonStream(SYSTEM, USER_PROMPT(input), {
     maxOutputTokens: 512,
   });
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch (error) {
-    throw new Error(
-      `Failed to parse validation response: ${
-        error instanceof Error ? error.message : "unknown error"
-      }. Response preview: ${raw.slice(0, 200)}`,
-    );
-  }
-  const score = (parsed as { score?: unknown } | null)?.score;
-  if (
-    parsed === null ||
-    typeof parsed !== "object" ||
-    typeof score !== "number" ||
-    !Number.isFinite(score) ||
-    score < 0 ||
-    score > 100 ||
-    typeof (parsed as { feedback?: unknown }).feedback !== "string"
-  ) {
-    throw new Error(
-      `Missing or invalid score/feedback fields. Response preview: ${raw.slice(0, 200)}`,
-    );
+  const scoreMatch = raw.match(/(?:^|\n)SCORE\s*[\t:|]\s*(\d+(?:\.\d+)?)/i);
+  const feedbackMatch = raw.match(/(?:^|\n)FEEDBACK\s*[\t:|]\s*(.+)/i);
+  const score = scoreMatch ? Number(scoreMatch[1]) : NaN;
+  const feedback = feedbackMatch?.[1]?.trim();
+  if (!Number.isFinite(score) || score < 0 || score > 100 || !feedback) {
+    throw new Error(`Invalid compact grading response. Response preview: ${raw.slice(0, 200)}`);
   }
   return {
     isCorrect: score >= PASS_THRESHOLD,
     score,
-    feedback: (parsed as { feedback: string }).feedback,
+    feedback,
   };
 }

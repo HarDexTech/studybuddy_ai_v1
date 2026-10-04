@@ -105,7 +105,13 @@ Document Content:
 ${input.documentContent}
 \`\`\`
 
-Generate ${input.batchSize} unique, diverse questions now. Return them in a JSON object with a 'questions' array. Return ONLY valid JSON, no markdown formatting. Be concise.`;
+Generate ${input.batchSize} unique, diverse questions now.
+Return one tab-delimited record per question, with no header and no markdown:
+TYPE<TAB>QUESTION<TAB>CHOICES<TAB>CORRECT_ANSWER
+For multiple choice, put the four choices in CHOICES separated by " || ".
+For true or false, leave CHOICES empty and use true or false as CORRECT_ANSWER.
+For fill-in-the-blank and theory, leave CHOICES and CORRECT_ANSWER empty.
+Keep each question on one line and do not use tab characters inside fields.`;
 
   return prompt;
 };
@@ -141,20 +147,30 @@ export async function generateBatchTestQuestions(input: GenerateBatchTestQuestio
   const raw = await callJsonStream(SYSTEM, USER_PROMPT(input), {
     maxOutputTokens: input.batchSize * 1024,
   });
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch (error) {
-    throw new Error(
-      `Failed to parse batch-question response: ${
-        error instanceof Error ? error.message : 'unknown error'
-      }. Response preview: ${raw.slice(0, 200)}`,
-    );
+  const questions = raw
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line): RawQuestion | null => {
+      const [type, question, choicesText = "", correctAnswer = ""] = line.split("\t");
+      if (!type || !question) return null;
+      const choices = choicesText
+        ? choicesText.split(" || ").map((choice) => choice.trim()).filter(Boolean)
+        : undefined;
+      return {
+        type,
+        question,
+        choices,
+        correctAnswer:
+          type === "true or false"
+            ? correctAnswer.trim().toLowerCase() === "true"
+            : correctAnswer.trim() || undefined,
+      };
+    })
+    .filter((question): question is RawQuestion => question !== null);
+  const normalized = normalizeBatch({ questions });
+  if (normalized.questions.length === 0) {
+    throw new Error(`Invalid compact question response. Response preview: ${raw.slice(0, 200)}`);
   }
-  if (parsed === null || typeof parsed !== 'object' || !Array.isArray((parsed as { questions?: unknown }).questions)) {
-    throw new Error(
-      `Batch response missing "questions" array. Response preview: ${raw.slice(0, 200)}`,
-    );
-  }
-  return normalizeBatch(parsed as { questions?: unknown });
+  return normalized;
 }

@@ -8,12 +8,154 @@
 
 import { getUserId, requireUserId } from "./auth";
 import { sql } from "./db";
-import type { CachedDocument, StoredTestProgress, PastQuestionSet } from "./types";
+import type { CachedDocument, StoredTestProgress, PastQuestionSet, Question, TestSettings } from "./types";
 import { indexDocument } from "@/ai/rag";
 import { after } from "next/server";
 
 const MAX_RECENT_DOCS = 10;
 const MAX_STORED_DOC_TEXT_CHARS = 200_000;
+
+export async function createStudySession(
+  documentIds: string[],
+  settings: TestSettings,
+  questions: Question[],
+): Promise<string> {
+  const userId = await requireUserId();
+  const documents = await getMultipleRecentDocuments(documentIds);
+  if (documents.length !== documentIds.length) {
+    throw new Error("DOCUMENT_ACCESS_DENIED: session document unavailable.");
+  }
+
+  const sessionId = crypto.randomUUID();
+  await sql`
+    INSERT INTO study_sessions (id, user_id, document_ids, settings)
+    VALUES (${sessionId}, ${userId}, ${JSON.stringify(documentIds)}, ${JSON.stringify(settings)})
+  `;
+  for (const [questionIndex, question] of questions.entries()) {
+    await sql`
+      INSERT INTO study_questions (id, session_id, question_index, payload)
+      VALUES (${crypto.randomUUID()}, ${sessionId}, ${questionIndex}, ${JSON.stringify(question)})
+    `;
+  }
+  return sessionId;
+}
+
+export async function loadActiveStudySession(): Promise<StoredTestProgress | null> {
+  const userId = await getUserId();
+  if (!userId) return null;
+  const rows = (await sql`
+    SELECT id, document_ids, settings, progress
+    FROM study_sessions
+    WHERE user_id = ${userId} AND status = 'active' AND progress IS NOT NULL
+    ORDER BY created_at DESC
+    LIMIT 1
+  `) as { id: string; document_ids: string; settings: string; progress: string }[];
+  if (rows.length === 0) return null;
+
+  const row = rows[0];
+  const progress = JSON.parse(row.progress) as StoredTestProgress;
+  const settings = JSON.parse(row.settings) as TestSettings;
+  const documentIds = JSON.parse(row.document_ids) as string[];
+  const documents = await getMultipleRecentDocuments(documentIds);
+  if (documents.length === 0) return null;
+  const primary = documents[0];
+
+  return {
+    ...progress,
+    sessionId: row.id,
+    settings,
+    documentInfo: {
+      text: primary.text,
+      file: { name: primary.name, type: primary.type, size: primary.size },
+    },
+    effectiveDocumentText: primary.structuredText ?? primary.text,
+  };
+}
+
+export async function saveStudyAnswer(
+  sessionId: string,
+  questionIndex: number,
+  userAnswer: string,
+  score: number,
+  feedback: string,
+): Promise<void> {
+  const userId = await requireUserId();
+  const rows = (await sql`
+    SELECT q.id
+    FROM study_questions q
+    JOIN study_sessions s ON s.id = q.session_id
+    WHERE q.session_id = ${sessionId}
+      AND q.question_index = ${questionIndex}
+      AND s.user_id = ${userId}
+    LIMIT 1
+  `) as { id: string }[];
+  if (rows.length === 0) {
+    throw new Error("STUDY_QUESTION_ACCESS_DENIED");
+  }
+
+  await sql`
+    INSERT INTO study_answers (session_id, question_id, user_answer, score, feedback)
+    VALUES (${sessionId}, ${rows[0].id}, ${userAnswer}, ${score}, ${feedback})
+    ON CONFLICT(session_id, question_id) DO UPDATE SET
+      user_answer = EXCLUDED.user_answer,
+      score = EXCLUDED.score,
+      feedback = EXCLUDED.feedback,
+      created_at = floor(extract(epoch from now()))::bigint
+  `;
+}
+
+export async function updateStudySession(
+  sessionId: string,
+  progress: {
+    currentQuestionIndex: number;
+    userAnswer: string;
+    results: unknown[];
+    currentResult: unknown;
+    isAnswered: boolean;
+    timeLeft: number | null;
+    questions: Question[];
+  },
+): Promise<void> {
+  const userId = await requireUserId();
+  const sessionRows = (await sql`
+    SELECT id FROM study_sessions
+    WHERE id = ${sessionId} AND user_id = ${userId}
+    LIMIT 1
+  `) as { id: string }[];
+  if (sessionRows.length === 0) throw new Error("STUDY_SESSION_ACCESS_DENIED");
+
+  await sql`
+    UPDATE study_sessions
+    SET progress = ${JSON.stringify(progress)}
+    WHERE id = ${sessionId} AND user_id = ${userId}
+  `;
+
+  for (const [questionIndex, question] of progress.questions.entries()) {
+    await sql`
+      INSERT INTO study_questions (id, session_id, question_index, payload)
+      VALUES (${crypto.randomUUID()}, ${sessionId}, ${questionIndex}, ${JSON.stringify(question)})
+      ON CONFLICT(session_id, question_index) DO UPDATE SET payload = EXCLUDED.payload
+    `;
+  }
+}
+
+export async function completeStudySession(sessionId: string): Promise<void> {
+  const userId = await requireUserId();
+  await sql`
+    UPDATE study_sessions
+    SET status = 'completed', completed_at = floor(extract(epoch from now()))::bigint
+    WHERE id = ${sessionId} AND user_id = ${userId}
+  `;
+}
+
+export async function abandonStudySession(sessionId: string): Promise<void> {
+  const userId = await requireUserId();
+  await sql`
+    UPDATE study_sessions
+    SET status = 'abandoned', completed_at = floor(extract(epoch from now()))::bigint
+    WHERE id = ${sessionId} AND user_id = ${userId} AND status = 'active'
+  `;
+}
 
 interface DocRow {
   id: string;
@@ -24,6 +166,8 @@ interface DocRow {
   last_modified: number;
   text: string;
   structured_text: string | null;
+  status: 'processing' | 'ready' | 'failed';
+  processing_error: string | null;
   created_at: number;
 }
 
@@ -36,7 +180,25 @@ function toCachedDocument(row: DocRow): CachedDocument {
     lastModified: row.last_modified,
     text: row.text,
     structuredText: row.structured_text ?? undefined,
+    status: row.status,
+    processingError: row.processing_error ?? undefined,
   };
+}
+
+export async function getDocumentById(id: string): Promise<CachedDocument> {
+  const userId = await requireUserId();
+  const rows = (await sql`
+    SELECT id, user_id, name, type, size, last_modified, text, structured_text, status, processing_error, created_at
+    FROM documents
+    WHERE id = ${id} AND user_id = ${userId}
+    LIMIT 1
+  `) as DocRow[];
+
+  if (rows.length === 0) {
+    throw new Error("DOCUMENT_NOT_FOUND: document does not exist.");
+  }
+
+  return toCachedDocument(rows[0]);
 }
 
 export async function getRecentDocuments(): Promise<CachedDocument[]> {
@@ -44,7 +206,7 @@ export async function getRecentDocuments(): Promise<CachedDocument[]> {
   if (!userId) return [];
   try {
     const rows = (await sql`
-      SELECT id, user_id, name, type, size, last_modified, text, structured_text, created_at
+      SELECT id, user_id, name, type, size, last_modified, text, structured_text, status, processing_error, created_at
       FROM documents WHERE user_id = ${userId}
       ORDER BY created_at DESC LIMIT ${MAX_RECENT_DOCS}
     `) as DocRow[];
@@ -57,18 +219,18 @@ export async function getRecentDocuments(): Promise<CachedDocument[]> {
 
 export async function addRecentDocument(doc: CachedDocument): Promise<void> {
   const userId = await requireUserId();
+  const trimmedText =
+    doc.text.length > MAX_STORED_DOC_TEXT_CHARS
+      ? doc.text.slice(0, MAX_STORED_DOC_TEXT_CHARS)
+      : doc.text;
+  const trimmedStructured =
+    doc.structuredText && doc.structuredText.length > MAX_STORED_DOC_TEXT_CHARS
+      ? doc.structuredText.slice(0, MAX_STORED_DOC_TEXT_CHARS)
+      : doc.structuredText;
   try {
-    const trimmedText =
-      doc.text.length > MAX_STORED_DOC_TEXT_CHARS
-        ? doc.text.slice(0, MAX_STORED_DOC_TEXT_CHARS)
-        : doc.text;
-    const trimmedStructured =
-      doc.structuredText && doc.structuredText.length > MAX_STORED_DOC_TEXT_CHARS
-        ? doc.structuredText.slice(0, MAX_STORED_DOC_TEXT_CHARS)
-        : doc.structuredText;
     await sql`
-      INSERT INTO documents (id, user_id, name, type, size, last_modified, text, structured_text)
-      VALUES (${doc.id}, ${userId}, ${doc.name}, ${doc.type}, ${doc.size}, ${doc.lastModified}, ${trimmedText}, ${trimmedStructured ?? null})
+      INSERT INTO documents (id, user_id, name, type, size, last_modified, text, structured_text, status, processing_error)
+      VALUES (${doc.id}, ${userId}, ${doc.name}, ${doc.type}, ${doc.size}, ${doc.lastModified}, ${trimmedText}, ${trimmedStructured ?? null}, 'processing', NULL)
       ON CONFLICT(id) DO UPDATE SET
         user_id = EXCLUDED.user_id,
         name = EXCLUDED.name,
@@ -77,13 +239,18 @@ export async function addRecentDocument(doc: CachedDocument): Promise<void> {
         last_modified = EXCLUDED.last_modified,
         text = EXCLUDED.text,
         structured_text = EXCLUDED.structured_text,
+        status = 'processing',
+        processing_error = NULL,
         created_at = floor(extract(epoch from now()))::bigint
     `;
 
     const ragText = trimmedStructured ?? trimmedText;
-    await indexDocument(doc.id, userId, ragText).catch((err) =>
-      console.error("Failed to index document for RAG:", err),
-    );
+    await indexDocument(doc.id, userId, ragText);
+    await sql`
+      UPDATE documents
+      SET status = 'ready', processing_error = NULL
+      WHERE id = ${doc.id} AND user_id = ${userId}
+    `;
 
     // Pre-generate summary in background so it's cached before user clicks "Summarize"
     after(async () => {
@@ -95,7 +262,15 @@ export async function addRecentDocument(doc: CachedDocument): Promise<void> {
       );
     });
   } catch (error) {
-    console.error("Failed to add recent document:", error);
+    const message = error instanceof Error ? error.message : "DOCUMENT_PROCESSING_FAILED";
+    await sql`
+      UPDATE documents
+      SET status = 'failed', processing_error = ${message}
+      WHERE id = ${doc.id} AND user_id = ${userId}
+    `.catch((statusError) =>
+      console.error("Failed to record document processing failure:", statusError),
+    );
+    throw new Error(`DOCUMENT_PROCESSING_FAILED: ${message}`);
   }
 }
 
@@ -126,7 +301,7 @@ export async function getMultipleRecentDocuments(
     // Postgres `= ANY($n::text[])` replaces SQLite's `json_each(?)`.
     // The neon() driver accepts JS arrays directly as a parameter.
     const rows = (await sql`
-      SELECT id, user_id, name, type, size, last_modified, text, structured_text, created_at
+      SELECT id, user_id, name, type, size, last_modified, text, structured_text, status, processing_error, created_at
       FROM documents WHERE user_id = ${userId} AND id = ANY(${ids}::text[])
     `) as DocRow[];
     // Preserve caller's order.

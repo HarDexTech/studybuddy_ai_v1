@@ -17,14 +17,7 @@ export type AnswerDocumentQuestionInput = z.infer<
   typeof AnswerDocumentQuestionInputSchema
 >;
 
-const AnswerDocumentQuestionOutputSchema = z.object({
-  answer: z
-    .string()
-    .describe("The answer to the question based on the document content."),
-});
-export type AnswerDocumentQuestionOutput = z.infer<
-  typeof AnswerDocumentQuestionOutputSchema
->;
+export type AnswerDocumentQuestionOutput = { answer: string };
 
 const SYSTEM = "You are a study assistant that answers questions about document content.";
 
@@ -38,35 +31,20 @@ Document Content:
 ${input.documentContent}
 \`\`\`
 
-Provide a clear, accurate answer based on the document. Return ONLY valid JSON in this exact format with no markdown:
-{
-  "answer": "your answer here"
-}`;
+Provide a clear, accurate answer based on the document. Return only the answer
+as plain text or Markdown. Do not include JSON, labels, or meta-commentary.
+If the document does not contain enough information, say so clearly.`;
 
 export async function answerDocumentQuestion(
   input: AnswerDocumentQuestionInput,
 ): Promise<AnswerDocumentQuestionOutput> {
   await enforceRateLimit(RateLimitPresets.qna);
-  return callJson(SYSTEM, USER_PROMPT(input), (raw) => {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(raw);
-    } catch (error) {
-      throw new Error(
-        `Failed to parse answer response: ${
-          error instanceof Error ? error.message : "unknown error"
-        }. Response preview: ${raw.slice(0, 200)}`,
-      );
-    }
-    if (
-      parsed === null ||
-      typeof parsed !== "object" ||
-      typeof (parsed as { answer?: unknown }).answer !== "string"
-    ) {
-      throw new Error(
-        `Missing or invalid "answer" field. Response preview: ${raw.slice(0, 200)}`,
-      );
-    }
-    return parsed as AnswerDocumentQuestionOutput;
-  });
+  const answer = await callJson(
+    SYSTEM,
+    USER_PROMPT(input),
+    (raw) => raw.trim(),
+    { skipStripFences: true },
+  );
+  if (!answer) throw new Error("AI_EMPTY_ANSWER: the model returned no answer.");
+  return { answer };
 }

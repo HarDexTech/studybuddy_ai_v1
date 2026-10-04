@@ -2,15 +2,46 @@
 
 StudyBuddy AI is a Next.js application designed to supercharge your study sessions. Upload your documents (PDF, DOCX, PPTX, or TXT), and let generative AI create interactive tests, answer questions about the content, and provide detailed explanations to help you master the material.
 
-This project is built with Next.js, React, Tailwind CSS, ShadCN UI, and Genkit for its AI capabilities.
+This project is built with Next.js, React, Tailwind CSS, ShadCN UI, and server-side AI provider adapters.
 
 ## Features
 
-- **Multi-format Document Upload:** Supports PDF, DOCX, PPTX, and plain text files (up to 10MB).
-- **AI-Powered Q&A:** Ask questions about your document and get instant, context-aware answers.
+- **Multi-format Document Upload:** Supports PDF, DOCX, PPTX, and plain text files (up to 50MB). Larger or more complex files can be parsed on the server, while suitable workloads can use the client parser.
+- **Structured Document Processing:** PDF, DOCX, and PPTX content is formatted during parsing and indexed for retrieval.
+- **AI-Powered Q&A:** Ask questions about your document and get context-aware answers grounded in retrieved document chunks.
 - **Customizable Test Generation:** Create tests with various question types (Multiple Choice, True/False, Fill-in-the-Blank, etc.), difficulty levels, and optional timers.
+- **Server-owned Study Sessions:** Test questions, progress, answers, and completion state are persisted and authorized through study sessions.
 - **Interactive Test Experience:** Get instant feedback on your answers and ask the AI for detailed explanations for incorrect questions.
 - **Downloadable Results:** Save a PDF summary of your test performance for offline review.
+
+## Architecture
+
+The application keeps document access, retrieval, AI calls, and persistence on the server:
+
+```text
+Upload
+  → authenticate and validate
+  → extract and structure content
+  → persist document and index RAG chunks
+  → retrieve authorized context
+  → call the AI provider
+  → validate the response
+  → return a typed result to the UI
+```
+
+Documents receive UUIDs and have an explicit processing lifecycle: `processing`,
+`ready`, or `failed`. RAG is the context boundary for Q&A, test generation,
+grading, explanations, and summaries. The original upload is not retained by
+default; the structured document content and retrieval index are the canonical
+study representation.
+
+AI responses use the smallest reliable format for the operation:
+
+- Q&A and explanations return plain text or Markdown.
+- Summaries and document formatting return streamed Markdown.
+- Grading uses a validated compact score/feedback record.
+- Test generation uses validated tab-delimited question records.
+- JSON is retained for genuinely nested metadata.
 
 ## Prerequisites
 
@@ -58,9 +89,9 @@ After setting `DATABASE_URL` (and optionally `DATABASE_URL_DIRECT`), create the 
 npm run migrate
 ```
 
-This runs `src/scripts/migrate.ts`, which executes the idempotent `SCHEMA_DDL` from `src/lib/db.ts` (safe to run repeatedly — all statements use `CREATE TABLE / INDEX IF NOT EXISTS`).
+This runs `src/scripts/migrate.ts`, which executes the idempotent `SCHEMA_DDL` from `src/lib/db.ts` (safe to run repeatedly — schema creation and migration statements are idempotent).
 
-### 2. Install Dependencies
+### 3. Install Dependencies
 
 Open your terminal, navigate to the project's root directory, and run the following command to install all the necessary packages:
 
@@ -68,7 +99,7 @@ Open your terminal, navigate to the project's root directory, and run the follow
 npm install
 ```
 
-### 3. Run the Development Server
+### 4. Run the Development Server
 
 Once the dependencies are installed, you can start the local development server with this command:
 
@@ -78,7 +109,7 @@ npm run dev
 
 This will start the application in development mode, complete with fast refresh and other modern Next.js features.
 
-### 4. Access the Application
+### 5. Access the Application
 
 After the server starts, you will see output in your terminal indicating that the application is ready. You can now access it in your web browser at:
 

@@ -18,12 +18,14 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { loadTestProgress, clearTestProgress } from "@/lib/storage";
+import { loadActiveStudySession, clearTestProgress } from "@/lib/storage";
+import { abandonStudySessionAction } from "@/app/actions/ai-actions";
 import type { StoredTestProgress, TestResult, TestSettings, Question } from "@/lib/types";
 
 // The shape of restored progress we use in this component — narrows the
 // generic StoredTestProgress type from storage.ts to typed Question/TestSettings.
 type RestoredTestProgress = {
+  sessionId?: string;
   docSignature?: string;
   settingsSignature?: string;
   questions?: Question[];
@@ -81,6 +83,7 @@ export default function Home() {
     "upload" | "studying" | "summarizing" | "testing" | "results"
   >("upload");
   const [documentInfo, setDocumentInfo] = useState<{
+    id?: string;
     text: string;
     file: { name: string; type: string; size: number };
     structuredText?: string;
@@ -102,7 +105,7 @@ export default function Home() {
   );
   const [testCreationMode, setTestCreationMode] = useState(false);
   const [crossDocDocuments, setCrossDocDocuments] = useState<
-    { name: string; content: string }[] | null
+    { id: string; name: string; content: string }[] | null
   >(null);
   const [preloadActivationId, setPreloadActivationId] = useState(0);
   const [sharedPreload, setSharedPreload] = useState<{
@@ -114,7 +117,7 @@ export default function Home() {
     let cancelled = false;
     (async () => {
       try {
-        const parsed = await loadTestProgress();
+        const parsed = await loadActiveStudySession();
         if (cancelled || !parsed) return;
 
         if (
@@ -251,6 +254,11 @@ export default function Home() {
   };
 
   const handleStartFreshInstead = () => {
+    if (pendingRestore?.sessionId) {
+      abandonStudySessionAction(pendingRestore.sessionId).catch((err) =>
+        console.error("Failed to abandon study session:", err),
+      );
+    }
     clearTestProgress().catch((err) =>
       console.error("Failed to clear test progress:", err),
     );
@@ -263,8 +271,10 @@ export default function Home() {
     docText: string,
     docFile: { name: string; type: string; size: number },
     docStructuredText?: string,
+    documentId?: string,
   ) => {
     setDocumentInfo({
+      id: documentId,
       text: docText,
       file: docFile,
       structuredText: docStructuredText,
@@ -298,7 +308,7 @@ export default function Home() {
     generatedQuestions: Question[],
     settings: TestSettings,
     nextEffectiveDocumentText: string,
-    docs?: { name: string; content: string }[],
+    docs?: { id: string; name: string; content: string }[],
   ) => {
     setInitialQuestions(generatedQuestions);
     setTestSettings(settings);
@@ -356,6 +366,7 @@ export default function Home() {
         return (
           documentInfo && (
             <StudyView
+              documentId={documentInfo.id}
               document={documentInfo.file}
               documentText={documentInfo.text}
               structuredText={documentInfo.structuredText}
@@ -371,6 +382,7 @@ export default function Home() {
           documentInfo && (
             <SummaryView
               documents={[{
+                id: documentInfo.id ?? "",
                 name: documentInfo.file.name,
                 type: documentInfo.file.type,
                 text: documentInfo.text,
@@ -395,6 +407,7 @@ export default function Home() {
               onTestFinished={handleTestFinished}
               showRestoreNotice={showRestoredSessionNotice}
               restoreSnapshot={restoreSnapshot}
+              restoredSessionId={pendingRestore?.sessionId}
               onBack={() => setView(testOrigin)}
             />
           )

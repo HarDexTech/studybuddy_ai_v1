@@ -61,6 +61,8 @@ export interface CachedDocument {
   lastModified: number;
   text: string;
   structuredText?: string;
+  status?: 'processing' | 'ready' | 'failed';
+  processingError?: string;
 }
 
 export interface PastQuestionSet {
@@ -71,6 +73,7 @@ export interface PastQuestionSet {
 }
 
 export interface StoredTestProgress {
+  sessionId?: string;
   docSignature?: string;
   settingsSignature?: string;
   documentInfo?: {
