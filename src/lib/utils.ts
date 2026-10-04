@@ -52,7 +52,11 @@ export function chunkDocument(text: string, chunkCount: number): string[] {
     const enoughForChunk = currentSize >= targetSize;
     const remainingParagraphs = paragraphs.length - i - 1;
     const remainingChunks = targetChunks - chunks.length - 1;
-    const shouldFlush = enoughForChunk && remainingParagraphs >= remainingChunks;
+    const canReserveRemainingChunks = remainingParagraphs >= remainingChunks;
+    const mustReserveOneChunkPerParagraph = remainingParagraphs === remainingChunks;
+    const shouldFlush =
+      canReserveRemainingChunks &&
+      (enoughForChunk || mustReserveOneChunkPerParagraph);
 
     if (shouldFlush) {
       chunks.push(currentChunk.join('\n\n'));
